@@ -39,10 +39,10 @@ class VehicleProjector:
         """
         将欧拉角转换为旋转矩阵
 
-        坐标系定义：Z轴向上，+X为朝向方向
+        CARLA/UE4坐标系定义：Z轴向上，+X为朝向方向，+Y为右侧
         - yaw: 绕Z轴旋转（航向角，水平面内转向）
-        - pitch: 绕Y轴旋转（俯仰角，抬头低头）
-        - roll: 绕X轴旋转（翻滚角，左右倾斜）
+        - pitch: 绕Y轴旋转（俯仰角，抬头低头）- CARLA中方向与标准右手系相反
+        - roll: 绕X轴旋转（翻滚角，左右倾斜）- CARLA中方向与标准右手系相反
 
         Args:
             rotation: 欧拉角字典，包含 pitch, yaw, roll (单位：度)
@@ -50,9 +50,10 @@ class VehicleProjector:
         Returns:
             3x3旋转矩阵
         """
-        pitch = np.radians(rotation['pitch'])
+        # CARLA/UE4中pitch和roll的旋转方向与标准右手坐标系相反，需要取反
+        pitch = np.radians(-rotation['pitch'])
         yaw = np.radians(rotation['yaw'])
-        roll = np.radians(rotation['roll'])
+        roll = np.radians(-rotation['roll'])
 
         # 绕Z轴旋转 (yaw - 航向角)
         Rz = np.array([
@@ -98,17 +99,18 @@ class VehicleProjector:
         width = vehicle_dimensions['width']
         height = vehicle_dimensions['height']
 
-        # 在车辆局部坐标系中定义8个角点（车头朝向+X）
-        # 假设车辆中心在底盘中心
+        # 在车辆局部坐标系中定义8个角点（车头朝向+X，CARLA坐标系：Y轴朝右）
+        # CARLA的location是bounding box的几何中心，所以角点应该以中心为原点
+        # Z方向：从 -height/2 到 +height/2
         corners_local = np.array([
-            [length/2, width/2, 0],      # 前右下
-            [length/2, -width/2, 0],     # 前左下
-            [-length/2, -width/2, 0],    # 后左下
-            [-length/2, width/2, 0],     # 后右下
-            [length/2, width/2, height], # 前右上
-            [length/2, -width/2, height],# 前左上
-            [-length/2, -width/2, height],# 后左上
-            [-length/2, width/2, height] # 后右上
+            [length/2, width/2, -height/2],      # 前右下（Y正方向是右）
+            [length/2, -width/2, -height/2],     # 前左下（Y负方向是左）
+            [-length/2, -width/2, -height/2],    # 后左下
+            [-length/2, width/2, -height/2],     # 后右下
+            [length/2, width/2, height/2],       # 前右上
+            [length/2, -width/2, height/2],      # 前左上
+            [-length/2, -width/2, height/2],     # 后左上
+            [-length/2, width/2, height/2]       # 后右上
         ])
 
         # 获取旋转矩阵
@@ -171,12 +173,12 @@ class VehicleProjector:
         """
         # 标准相机投影：使用Z坐标作为深度（摄像头朝向为+X，需要转换到标准相机坐标系）
         # 标准相机坐标系：Z轴朝前，X轴朝右，Y轴朝下
-        # 当前坐标系：X轴朝前，Y轴朝左，Z轴朝上
-        # 转换：camera_standard_x = -Y, camera_standard_y = -Z, camera_standard_z = X
+        # CARLA坐标系：X轴朝前，Y轴朝右，Z轴朝上
+        # 转换：camera_standard_x = Y, camera_standard_y = -Z, camera_standard_z = X
 
-        x_standard = -points_camera[:, 1]  # 图像x方向（右）
-        y_standard = -points_camera[:, 2]  # 图像y方向（下）
-        z_standard = points_camera[:, 0]   # 深度方向（前）
+        x_standard = points_camera[:, 1]   # 图像x方向（右）- CARLA的Y轴朝右，直接使用
+        y_standard = -points_camera[:, 2]  # 图像y方向（下）- CARLA的Z轴朝上，取反得到朝下
+        z_standard = points_camera[:, 0]   # 深度方向（前）- CARLA的X轴朝前
 
         # 投影到归一化平面
         x_normalized = x_standard / z_standard

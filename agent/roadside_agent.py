@@ -16,13 +16,16 @@ from .llm_interface import LLMInterface
 class RoadsideAgent:
     """路侧交通智能体主类"""
 
-    def __init__(self, agent_config_path: str, camera_config_path: str):
+    def __init__(self, agent_config_path: str, camera_config_path: str,
+                 save_images: bool = False, output_dir: str = "debug/camera_images"):
         """
         初始化路侧智能体
 
         Args:
             agent_config_path: Agent配置文件路径
             camera_config_path: 摄像头配置文件路径
+            save_images: 是否保存图像
+            output_dir: 图像保存的根目录
         """
         self.agent_config_path = agent_config_path
         self.camera_config_path = camera_config_path
@@ -31,7 +34,7 @@ class RoadsideAgent:
         self.config = self._load_agent_config()
 
         # 初始化各模块
-        self.camera_manager = CameraManager(camera_config_path)
+        self.camera_manager = CameraManager(camera_config_path, save_images=save_images, output_dir=output_dir)
         self.input_processor = InputProcessor()
         self.llm_interface = LLMInterface(self.config['llm'], self.config.get('image_processing', {}))
 
@@ -39,6 +42,8 @@ class RoadsideAgent:
         print(f"- 摄像头数量: {len(self.camera_manager.get_all_camera_ids())}")
         print(f"- LLM提供商: {self.config['llm']['provider']}")
         print(f"- 模型: {self.config['llm']['model']}")
+        if save_images:
+            print(f"- 图像保存: 已启用 ({output_dir})")
 
     def _load_agent_config(self) -> Dict:
         """加载Agent配置文件"""

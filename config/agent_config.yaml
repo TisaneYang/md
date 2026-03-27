@@ -27,10 +27,21 @@ agent:
   confidence_threshold: 0.6
 
   # 是否保存分析结果
-  save_results: false
+  save_results: true
 
   # 结果保存路径
   results_dir: "results/"
+
+  # 定期触发配置
+  periodic_trigger:
+    # 是否启用定期触发
+    enabled: false
+
+    # 触发间隔（秒）
+    interval: 3
+
+    # 是否在没有车辆信息时跳过分析
+    skip_if_no_vehicle: true
 
 # 图像处理配置
 image_processing:
@@ -44,7 +55,7 @@ image_processing:
   jpeg_quality: 85
 
   # 是否保存输入给模型的图像
-  save_input_images: false
+  save_input_images: true
 
   # 图像保存目录
   input_images_dir: "debug/input_images/"

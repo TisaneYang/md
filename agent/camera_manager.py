@@ -10,7 +10,10 @@
 
 import yaml
 import numpy as np
+import os
+from datetime import datetime
 from typing import Dict, List, Tuple, Optional
+from PIL import Image
 from utils.vehicle_projection import VehicleProjector
 from utils.bbox_visualizer import BBoxVisualizer
 
@@ -18,18 +21,29 @@ from utils.bbox_visualizer import BBoxVisualizer
 class CameraManager:
     """摄像头管理器，处理多摄像头投影和可见性判断"""
 
-    def __init__(self, camera_config_path: str):
+    def __init__(self, camera_config_path: str, save_images: bool = False, output_dir: str = "debug/camera_images"):
         """
         初始化摄像头管理器
 
         Args:
             camera_config_path: 摄像头配置文件路径（YAML格式）
+            save_images: 是否保存图像
+            output_dir: 图像保存的根目录
         """
         self.config_path = camera_config_path
         self.cameras = {}
         self.projectors = {}
         self.visualizers = {}
         self.camera_relationships = []
+
+        # 图像保存配置
+        self.save_images = save_images
+        self.output_dir = output_dir
+
+        # 如果启用保存，创建目录
+        if self.save_images:
+            os.makedirs(self.output_dir, exist_ok=True)
+            print(f"图像保存已启用，保存路径: {self.output_dir}")
 
         self._load_config()
         self._initialize_projectors()
@@ -66,6 +80,36 @@ class CameraManager:
                 corner_color=(255, 0, 0),
                 corner_radius=3
             )
+
+    def _save_image(self, image: np.ndarray, camera_id: str, has_bbox: bool = False):
+        """
+        保存图像到指定摄像头的文件夹
+
+        Args:
+            image: numpy图像数组 (H, W, 3)
+            camera_id: 摄像头ID
+            has_bbox: 是否包含标定框
+        """
+        if not self.save_images:
+            return
+
+        try:
+            # 为每个摄像头创建子目录
+            camera_dir = os.path.join(self.output_dir, camera_id)
+            os.makedirs(camera_dir, exist_ok=True)
+
+            # 生成文件名：时间戳_[with_bbox].jpg
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            filename = f"{timestamp}.jpg"
+            filepath = os.path.join(camera_dir, filename)
+
+            # 转换为PIL Image并保存
+            pil_image = Image.fromarray(image)
+            pil_image.save(filepath, format='JPEG', quality=95)
+
+            print(f"✓ 已保存图像: {filepath}")
+        except Exception as e:
+            print(f"✗ 保存图像失败: {e}")
 
     def project_vehicle(self, vehicle_info: Dict, raw_images: Dict[str, np.ndarray]) -> Dict:
         """
@@ -167,6 +211,9 @@ class CameraManager:
                         color=(255, 255, 0),  # 黄色2D框
                         thickness=1
                     )
+
+                    # 保存带标定框的图像
+                    self._save_image(image_with_bbox, camera_id, has_bbox=True)
                 else:
                     image_with_bbox = None
 
@@ -180,7 +227,7 @@ class CameraManager:
                 }
 
             except ValueError as e:
-                # 车辆不在该摄像头视野内
+                # 车辆不在该摄像头视野内，原始图像已经保存
                 continue
 
         # 判断是否在监控死角

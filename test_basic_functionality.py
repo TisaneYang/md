@@ -19,23 +19,23 @@ def test_camera_manager():
     print("\n" + "="*60)
     print("测试1: 摄像头管理器")
     print("="*60)
-    
-    # 初始化摄像头管理器
-    camera_manager = CameraManager('config/camera_config.yaml')
-    
+
+    # 初始化摄像头管理器，启用图像保存
+    camera_manager = CameraManager('config/camera_config.yaml', save_images=True, output_dir='debug/test_images')
+
     print(f"✓ 摄像头管理器初始化成功")
     print(f"  摄像头数量: {len(camera_manager.get_all_camera_ids())}")
-    
+
     # 获取摄像头信息
     camera_ids = camera_manager.get_all_camera_ids()
     for cam_id in camera_ids:
         info = camera_manager.get_camera_info(cam_id)
         print(f"  - {cam_id}: {info['name']}")
-    
+
     # 测试摄像头关系
     relationships = camera_manager.get_camera_relationships()
     print(f"\n摄像头关系:\n{relationships}")
-    
+
     return camera_manager
 
 
