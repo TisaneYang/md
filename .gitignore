@@ -1,0 +1,54 @@
+# Model weights / checkpoints
+*.ckpt
+*.pth
+*.pt
+*.bin
+*.safetensors
+*.onnx
+*.h5
+*.tflite
+ckpts/
+checkpoints/
+checkpoint/
+weights/
+weight/
+
+# Run records / logs / outputs
+*.log
+*.out
+*.err
+*.trace
+logs/
+log/
+runs/
+run/
+records/
+results/
+outputs/
+output/
+wandb/
+tensorboard/
+tb/
+MindDrive/ckpts/
+MindDrive/work_dirs/
+MindDrive/build/
+Bench2Drive/scenario_runner/srunner/metrics/data/
+
+# Python / build artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ninja_deps
+.ninja_log
+build/
+dist/
+*.so
+*.o
+*.svg
+Bench2Drive/leaderboard/docs/assets/
+
+# OS junk
+.DS_Store
+*.mp4
