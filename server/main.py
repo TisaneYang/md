@@ -7,33 +7,78 @@
 
 import os
 import sys
-import io
+import time
 import yaml
 import requests
 import numpy as np
 import cv2
 import asyncio
+import json
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 
 # 添加项目根目录到路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROADSIDE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROADSIDE_ROOT)
 
 from server.data_manager import DataManager
-from agent.roadside_agent import RoadsideAgent
+from agent2.roadside_agent import RoadsideAgent2
 
 app = FastAPI(title="路侧智能体服务端", version="1.0.0")
 
 # 全局变量
 data_manager = DataManager()
-agent: Optional[RoadsideAgent] = None
+agent: Optional[RoadsideAgent2] = None
 config: Dict = {}
 periodic_task: Optional[asyncio.Task] = None
 periodic_enabled: bool = False
 
+SERVER_CONFIG_PATH = os.path.join(ROADSIDE_ROOT, "config", "server_config.yaml")
+AGENT_CONFIG_PATH = os.path.join(ROADSIDE_ROOT, "config", "agent_config.yaml")
+CAMERA_CONFIG_PATH = os.path.join(ROADSIDE_ROOT, "config", "camera_config.yaml")
+DEBUG_SERVER_IMAGES_DIR = os.path.join(ROADSIDE_ROOT, "debug", "server_images")
 
-def load_config(config_path: str = "config/server_config.yaml") -> Dict:
+
+def _build_vehicle_message(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the structured message pushed from server to vehicle."""
+    risk_to_urgency = {
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+    }
+
+    return {
+        "time": int(time.time()),
+        "urgency": risk_to_urgency.get(result.get("risk_level", "medium"), "medium"),
+        "conflict": [],
+        "obstacles": [],
+        "dangers": [],
+        # "emergency_stop": result.get("risk_level") == "high" and result.get("should_intervene", False),
+        "risk_level": result.get("risk_level", "medium"),
+        "plan": result.get("maneuver_sequence", {}),
+        "should_intervene": result.get("should_intervene", False),
+    }
+
+
+def _send_result_to_vehicle(result: Dict[str, Any]) -> str:
+    """Push the structured result to the vehicle-side receiver."""
+    vehicle_ip = config.get("vehicle", {}).get("ip", "localhost")
+    vehicle_port = config.get("vehicle", {}).get("port", 8000)
+    vehicle_message = _build_vehicle_message(result)
+
+    try:
+        resp = requests.post(
+            f"http://{vehicle_ip}:{vehicle_port}/instruct",
+            json=vehicle_message,
+            timeout=5,
+        )
+        return "success" if resp.status_code == 200 else f"failed: http_{resp.status_code}"
+    except Exception as e:
+        return f"failed: {str(e)}"
+
+
+def load_config(config_path: str = SERVER_CONFIG_PATH) -> Dict:
     """加载服务端配置"""
     if os.path.exists(config_path):
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -47,11 +92,12 @@ def load_config(config_path: str = "config/server_config.yaml") -> Dict:
 def init_agent():
     """初始化Agent"""
     global agent
-    agent = RoadsideAgent(
-        agent_config_path='config/agent_config.yaml',
-        camera_config_path='config/camera_config.yaml',
-        save_images=True,  # 启用图像保存用于调试
-        output_dir='debug/server_images'
+    save_images = os.getenv("ROADSIDE_SAVE_IMAGES", "0").strip() in {"1", "true", "True", "yes", "YES"}
+    agent = RoadsideAgent2(
+        agent_config_path=AGENT_CONFIG_PATH,
+        camera_config_path=CAMERA_CONFIG_PATH,
+        save_images=save_images,
+        output_dir=DEBUG_SERVER_IMAGES_DIR,
     )
 
 
@@ -60,8 +106,7 @@ async def periodic_analysis_task():
     global periodic_enabled
 
     # 读取配置
-    agent_config_path = 'config/agent_config.yaml'
-    with open(agent_config_path, 'r', encoding='utf-8') as f:
+    with open(AGENT_CONFIG_PATH, 'r', encoding='utf-8') as f:
         agent_config = yaml.safe_load(f)
 
     interval = agent_config.get('agent', {}).get('periodic_trigger', {}).get('interval', 3)
@@ -77,9 +122,10 @@ async def periodic_analysis_task():
                 break
 
             # 获取缓存数据
-            raw_images = data_manager.get_images()
-            vehicle_info = data_manager.get_vehicle_info()
-            traffic_command = data_manager.get_traffic_command()
+            snapshot = data_manager.get_context_snapshot()
+            raw_images = snapshot["images"]
+            vehicle_info = snapshot["vehicle_info"]
+            traffic_command = snapshot["traffic_command"]
 
             # 检查是否有必要的数据
             if not raw_images:
@@ -98,20 +144,8 @@ async def periodic_analysis_task():
                 traffic_command=traffic_command
             )
 
-            # 发送驾驶建议到车端
-            vehicle_ip = config.get("vehicle", {}).get("ip", "localhost")
-            vehicle_port = config.get("vehicle", {}).get("port", 8000)
-
-            try:
-                resp = requests.post(
-                    f"http://{vehicle_ip}:{vehicle_port}/instruct",
-                    json={"instruction": result['advice']},
-                    timeout=5
-                )
-                send_status = "success" if resp.status_code == 200 else "failed"
-                print(f"[定期分析] 建议已发送到车端: {send_status}")
-            except Exception as e:
-                print(f"[定期分析] 发送到车端失败: {str(e)}")
+            send_status = _send_result_to_vehicle(result)
+            print(f"[定期分析] 结果已发送到车端: {send_status}")
 
         except Exception as e:
             print(f"[定期分析] 分析失败: {str(e)}")
@@ -152,8 +186,7 @@ async def startup_event():
     init_agent()
 
     # 读取agent配置，检查是否启用定期触发
-    agent_config_path = 'config/agent_config.yaml'
-    with open(agent_config_path, 'r', encoding='utf-8') as f:
+    with open(AGENT_CONFIG_PATH, 'r', encoding='utf-8') as f:
         agent_config = yaml.safe_load(f)
 
     periodic_config = agent_config.get('agent', {}).get('periodic_trigger', {})
@@ -230,7 +263,7 @@ async def update_camera_poses(poses: CameraPoseUpdate):
         import re
 
         # 更新配置文件
-        camera_config_path = 'config/camera_config.yaml'
+        camera_config_path = CAMERA_CONFIG_PATH
 
         # 读取现有配置文件内容
         with open(camera_config_path, 'r', encoding='utf-8') as f:
@@ -289,9 +322,9 @@ async def receive_vehicle_info(request: VehicleInfoRequest):
     vehicle_info = request.model_dump()
     data_manager.set_vehicle_info(vehicle_info)
 
-    # 获取缓存数据
-    raw_images = data_manager.get_images()
-    traffic_command = data_manager.get_traffic_command()
+    snapshot = data_manager.get_context_snapshot()
+    raw_images = snapshot["images"]
+    traffic_command = snapshot["traffic_command"]
 
     if not raw_images:
         raise HTTPException(status_code=400, detail="没有可用的摄像头图片")
@@ -306,26 +339,18 @@ async def receive_vehicle_info(request: VehicleInfoRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent分析失败: {str(e)}")
 
-    # 发送驾驶建议到车端
-    vehicle_ip = config.get("vehicle", {}).get("ip", "localhost")
-    vehicle_port = config.get("vehicle", {}).get("port", 8000)
-
-    try:
-        resp = requests.post(
-            f"http://{vehicle_ip}:{vehicle_port}/instruct",
-            json={"instruction": result['advice']},
-            timeout=5
-        )
-        send_status = "success" if resp.status_code == 200 else "failed"
-    except Exception as e:
-        send_status = f"failed: {str(e)}"
+    # vehicle_message = _build_vehicle_message(result)
+    send_status = _send_result_to_vehicle(result)
 
     return {
         "status": "success",
-        "advice": result['advice'],
-        "risk_level": result['risk_level'],
-        "confidence": result['confidence'],
-        "send_to_vehicle": send_status
+        "risk_level": result.get("risk_level", "medium"),
+        "should_intervene": result.get("should_intervene", False),
+        "maneuver_sequence": result.get("maneuver_sequence", {}),
+        "validation_result": result.get("validation_result", {}),
+        # "vehicle_message": vehicle_message,
+        "confidence": result.get("confidence", 0.0),
+        "send_to_vehicle": send_status,
     }
 
 
@@ -390,7 +415,11 @@ async def debug_save_bbox(
 async def receive_traffic_command(request: TrafficCommandRequest):
     """接收交通指挥指令"""
     data_manager.set_traffic_command(request.command)
-    return {"status": "success", "command": request.command}
+    return {
+        "status": "success",
+        "command": request.command,
+        "message": "交通指令已缓存，后续分析将优先按该指令规划。"
+    }
 
 
 @app.delete("/traffic/command")
@@ -432,8 +461,7 @@ async def stop_periodic_analysis():
 @app.get("/periodic/status")
 async def get_periodic_status():
     """获取定期分析状态"""
-    agent_config_path = 'config/agent_config.yaml'
-    with open(agent_config_path, 'r', encoding='utf-8') as f:
+    with open(AGENT_CONFIG_PATH, 'r', encoding='utf-8') as f:
         agent_config = yaml.safe_load(f)
 
     periodic_config = agent_config.get('agent', {}).get('periodic_trigger', {})
@@ -451,9 +479,7 @@ async def update_periodic_config(
     skip_if_no_vehicle: Optional[bool] = None
 ):
     """更新定期分析配置（不重启任务）"""
-    agent_config_path = 'config/agent_config.yaml'
-
-    with open(agent_config_path, 'r', encoding='utf-8') as f:
+    with open(AGENT_CONFIG_PATH, 'r', encoding='utf-8') as f:
         agent_config = yaml.safe_load(f)
 
     if 'agent' not in agent_config:
@@ -466,7 +492,7 @@ async def update_periodic_config(
     if skip_if_no_vehicle is not None:
         agent_config['agent']['periodic_trigger']['skip_if_no_vehicle'] = skip_if_no_vehicle
 
-    with open(agent_config_path, 'w', encoding='utf-8') as f:
+    with open(AGENT_CONFIG_PATH, 'w', encoding='utf-8') as f:
         yaml.dump(agent_config, f, allow_unicode=True, default_flow_style=False)
 
     return {

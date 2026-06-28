@@ -15,7 +15,11 @@ def send_command(server_url: str, command: str):
     response = requests.post(url, json={"command": command})
 
     if response.status_code == 200:
-        print(f"指令发送成功: {response.json()}")
+        payload = response.json()
+        print("指令发送成功")
+        print(f"- command: {payload.get('command')}")
+        if payload.get("message"):
+            print(f"- message: {payload.get('message')}")
     else:
         print(f"指令发送失败: {response.status_code} - {response.text}")
 

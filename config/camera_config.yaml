@@ -7,12 +7,12 @@ cameras:
   - id: "front"
     name: "前置路侧摄像头"
     location:
-      x: 4120.36
-      y: 790.10
-      z: 183.20
+      x: 266.30
+      y: -307.80
+      z: 5.00
     rotation:
       pitch: -5.71
-      yaw: -2.86
+      yaw: 180.00
       roll: 0.00
     intrinsics:
       # 内参根据CARLA相机设置计算
@@ -32,12 +32,12 @@ cameras:
   - id: "rear"
     name: "后置路侧摄像头"
     location:
-      x: 4120.36
-      y: 790.10
-      z: 183.20
+      x: 266.30
+      y: -307.80
+      z: 5.00
     rotation:
       pitch: 5.71
-      yaw: 177.14
+      yaw: 360.00
       roll: 0.00
     intrinsics:
       fx: 400.0     # X方向焦距

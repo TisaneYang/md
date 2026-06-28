@@ -11,6 +11,8 @@ import numpy as np
 from .camera_manager import CameraManager
 from .input_processor import InputProcessor
 from .llm_interface import LLMInterface
+from .workflow import build_agent_workflow
+from .workflow.nodes import WorkflowNodes
 
 
 class RoadsideAgent:
@@ -37,6 +39,13 @@ class RoadsideAgent:
         self.camera_manager = CameraManager(camera_config_path, save_images=save_images, output_dir=output_dir)
         self.input_processor = InputProcessor()
         self.llm_interface = LLMInterface(self.config['llm'], self.config.get('image_processing', {}))
+        self.workflow = build_agent_workflow(
+            WorkflowNodes(
+                input_processor=self.input_processor,
+                camera_manager=self.camera_manager,
+                llm_interface=self.llm_interface
+            )
+        )
 
         print(f"路侧智能体初始化完成")
         print(f"- 摄像头数量: {len(self.camera_manager.get_all_camera_ids())}")
@@ -55,14 +64,7 @@ class RoadsideAgent:
                vehicle_info: Dict,
                traffic_command: Optional[str] = None) -> Dict:
         """
-        分析交通场景并生成驾驶建议
-
-        这是Agent的主要接口，执行完整的分析流程：
-        1. 输入处理和验证
-        2. 车辆投影到摄像头
-        3. 判断可见性
-        4. 场景分析（如果可见）或盲区处理（如果不可见）
-        5. LLM推理和建议生成
+        分析交通场景并生成结构化任务规划
 
         Args:
             raw_images: 原始图像字典，key为camera_id，value为图像数组
@@ -78,9 +80,15 @@ class RoadsideAgent:
                     "projections": {...}
                 },
                 "vehicle_summary": str,
-                "reasoning": str,
+                "scene_type": str,
+                "fact_pack": {...},
+                "scene_model": {...},
+                "control_policy": {...},
+                "assessment": {...},
+                "strategy": {...},
                 "advice": str,
                 "risk_level": "low/medium/high",
+                "tasks": [...],
                 "confidence": float
             }
 
@@ -91,79 +99,68 @@ class RoadsideAgent:
         print("开始分析交通场景")
         print("="*60)
 
-        # 步骤1: 输入处理
-        print("\n[1/5] 处理输入数据...")
+        print("\n[1/6] 执行LangGraph工作流...")
         try:
-            processed_input = self.input_processor.prepare_input(
-                vehicle_data=vehicle_info,
-                images=raw_images,
-                traffic_command=traffic_command
+            workflow_state = self.workflow.invoke(
+                {
+                    'raw_images': raw_images,
+                    'vehicle_info': vehicle_info,
+                    'traffic_command': traffic_command
+                }
             )
-            vehicle_info_parsed = processed_input['vehicle_info']
-            traffic_command_parsed = processed_input['traffic_command']
-
-            vehicle_summary = self.input_processor.format_vehicle_summary(vehicle_info_parsed)
-            print(f"✓ 车辆信息: {vehicle_summary}")
-
-            if traffic_command_parsed:
-                print(f"✓ 交通指令: {traffic_command_parsed['command']}")
-            else:
-                print("✓ 无交通指令")
-
         except Exception as e:
-            print(f"✗ 输入处理失败: {e}")
+            print(f"✗ 工作流执行失败: {e}")
             raise
 
-        # 步骤2: 车辆投影
-        print("\n[2/5] 投影车辆到摄像头...")
-        try:
-            camera_coverage = self.camera_manager.project_vehicle(
-                vehicle_info=vehicle_info_parsed,
-                raw_images=raw_images
-            )
+        camera_coverage = workflow_state['camera_coverage']
+        vehicle_info_parsed = workflow_state['vehicle_info']
+        vehicle_summary = workflow_state['vehicle_summary']
+        traffic_command_parsed = workflow_state.get('traffic_command')
 
-            if camera_coverage['in_blind_spot']:
-                print("✗ 车辆不在任何摄像头视野内（监控死角）")
+        print(f"✓ 车辆信息: {vehicle_summary}")
+        if traffic_command_parsed:
+            print(f"✓ 交通指令: {traffic_command_parsed['command']}")
+        else:
+            print("✓ 无交通指令")
+
+        print("\n[2/6] 感知结果...")
+        if camera_coverage['in_blind_spot']:
+            print("✗ 车辆不在任何摄像头视野内（监控死角）")
+            if camera_coverage.get('blind_spot_info'):
                 print(f"  {camera_coverage['blind_spot_info']['description']}")
-            else:
-                visible_cameras = camera_coverage['visible_cameras']
-                print(f"✓ 车辆在 {len(visible_cameras)} 个摄像头视野内")
-                for cam_id in visible_cameras:
-                    cam_name = camera_coverage['projections'][cam_id]['camera_name']
-                    bbox = camera_coverage['projections'][cam_id]['bbox']
-                    print(f"  - {cam_name}: bbox={bbox}")
+        else:
+            visible_cameras = camera_coverage['visible_cameras']
+            print(f"✓ 车辆在 {len(visible_cameras)} 个摄像头视野内")
+            for cam_id in visible_cameras:
+                cam_name = camera_coverage['projections'][cam_id]['camera_name']
+                bbox = camera_coverage['projections'][cam_id]['bbox']
+                print(f"  - {cam_name}: bbox={bbox}")
 
-        except Exception as e:
-            print(f"✗ 投影失败: {e}")
-            raise
+        print("\n[3/6] 规则收敛...")
+        print(f"✓ 场景类型: {workflow_state['scene_type']}")
+        print(f"✓ 控制模式: {workflow_state['control_policy']['policy_mode']}")
 
-        # 步骤3: 摄像头关系说明
-        print("\n[3/5] 分析摄像头配置...")
-        camera_relationships = self.camera_manager.get_camera_relationships()
-        camera_coverage['relationships'] = camera_relationships
-        print(f"摄像头关系:\n{camera_relationships}")
+        print("\n[4/6] 环境事实提取...")
+        lane_analysis = workflow_state.get("lane_analysis", {})
+        print(
+            "✓ 车道识别: 单向"
+            f"{lane_analysis.get('one_way_lane_count', 0)}车道, 目标车辆位于第"
+            f"{lane_analysis.get('ego_lane_index', 0)}车道"
+        )
+        print(f"✓ 环境冲突风险: {workflow_state['scene_model'].get('conflict_risk', 'medium')}")
 
-        # 步骤4: LLM分析
-        print("\n[4/5] 调用LLM进行场景分析...")
-        try:
-            llm_result = self.llm_interface.analyze_scene(
-                camera_coverage=camera_coverage,
-                vehicle_info=vehicle_info_parsed,
-                traffic_command=traffic_command_parsed
-            )
+        print("\n[5/6] 受控评估与策略编译...")
+        print(f"✓ 风险等级: {workflow_state['risk_level']}")
+        print(f"✓ 总体策略: {workflow_state['strategy']['summary']}")
 
-            print(f"✓ LLM分析完成")
-            print(f"  风险等级: {llm_result['risk_level']}")
+        print("\n[6/6] 任务拆解...")
+        for index, task in enumerate(workflow_state['tasks'], start=1):
+            print(f"  {index}. {task['description']} ({task['time_limit']}s)")
 
-        except Exception as e:
-            print(f"✗ LLM分析失败: {e}")
-            raise
-
-        # 步骤5: 整合结果
-        print("\n[5/5] 整合分析结果...")
-
-        # 计算置信度
-        confidence = self._calculate_confidence(camera_coverage, llm_result)
+        confidence = self._calculate_confidence(
+            camera_coverage,
+            {'risk_level': workflow_state['risk_level']}
+        )
 
         result = {
             'camera_coverage': {
@@ -172,9 +169,18 @@ class RoadsideAgent:
                 'blind_spot_info': camera_coverage.get('blind_spot_info')
             },
             'vehicle_summary': vehicle_summary,
-            'reasoning': llm_result['reasoning'],
-            'advice': llm_result['advice'],
-            'risk_level': llm_result['risk_level'],
+            'scene_type': workflow_state['scene_type'],
+            'fact_pack': workflow_state.get('fact_pack', {}),
+            'control_policy': workflow_state.get('control_policy', {}),
+            'scene_model': workflow_state.get('scene_model', {}),
+            'lane_analysis': workflow_state.get('lane_analysis', {}),
+            'assessment': workflow_state.get('assessment', {}),
+            'advice': workflow_state.get('advice', ''),
+            'risk_level': workflow_state['risk_level'],
+            'strategy': workflow_state.get('strategy', {}),
+            'tasks': workflow_state['tasks'],
+            'should_intervene': workflow_state['should_intervene'],
+            'validation': workflow_state.get('validation', {}),
             'confidence': confidence,
             'traffic_command': traffic_command
         }
@@ -183,7 +189,7 @@ class RoadsideAgent:
         print("\n" + "="*60)
         print("分析结果")
         print("="*60)
-        print(f"\n{llm_result['advice']}\n")
+        print(f"\n{result['advice']}\n")
         print("="*60)
 
         return result
@@ -245,6 +251,13 @@ class RoadsideAgent:
         self.config = self._load_agent_config()
         self.camera_manager.reload_config()
         self.llm_interface = LLMInterface(self.config['llm'], self.config.get('image_processing', {}))
+        self.workflow = build_agent_workflow(
+            WorkflowNodes(
+                input_processor=self.input_processor,
+                camera_manager=self.camera_manager,
+                llm_interface=self.llm_interface
+            )
+        )
         print("配置重新加载完成")
 
     def analyze_batch(self, scenarios: list) -> list:

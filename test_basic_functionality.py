@@ -1,277 +1,199 @@
-"""
-基础功能测试脚本
+"""Basic regression tests for the LangGraph-based roadside workflow."""
 
-测试路侧智能体的核心功能，不需要LLM API
-"""
+import unittest
 
-import sys
 import numpy as np
-import cv2
 
-sys.path.insert(0, '.')
-
-from agent.camera_manager import CameraManager
 from agent.input_processor import InputProcessor
+from agent.workflow import build_agent_workflow
+from agent.workflow.nodes import WorkflowNodes
 
 
-def test_camera_manager():
-    """测试摄像头管理器"""
-    print("\n" + "="*60)
-    print("测试1: 摄像头管理器")
-    print("="*60)
+class FakeCameraManager:
+    def project_vehicle(self, vehicle_info, raw_images):
+        return {
+            "visible_cameras": list(raw_images.keys()),
+            "projections": {
+                camera_id: {
+                    "bbox": (10, 10, 20, 20),
+                    "corners_2d": [],
+                    "image_with_bbox": image,
+                    "camera_name": camera_id,
+                }
+                for camera_id, image in raw_images.items()
+            },
+            "in_blind_spot": False,
+            "blind_spot_info": None,
+        }
 
-    # 初始化摄像头管理器，启用图像保存
-    camera_manager = CameraManager('config/camera_config.yaml', save_images=True, output_dir='debug/test_images')
-
-    print(f"✓ 摄像头管理器初始化成功")
-    print(f"  摄像头数量: {len(camera_manager.get_all_camera_ids())}")
-
-    # 获取摄像头信息
-    camera_ids = camera_manager.get_all_camera_ids()
-    for cam_id in camera_ids:
-        info = camera_manager.get_camera_info(cam_id)
-        print(f"  - {cam_id}: {info['name']}")
-
-    # 测试摄像头关系
-    relationships = camera_manager.get_camera_relationships()
-    print(f"\n摄像头关系:\n{relationships}")
-
-    return camera_manager
+    def get_camera_relationships(self):
+        return "测试环境中的摄像头互补覆盖。"
 
 
-def test_vehicle_projection(camera_manager):
-    """测试车辆投影功能"""
-    print("\n" + "="*60)
-    print("测试2: 车辆投影功能")
-    print("="*60)
-    
-    # 创建测试图像
-    raw_images = {
-        'camera_1': np.ones((1080, 1920, 3), dtype=np.uint8) * 200,
-        'camera_2': np.ones((1080, 1920, 3), dtype=np.uint8) * 180
-    }
-    
-    # 测试车辆信息（在视野内）
-    vehicle_info = {
-        "type": "轿车",
-        "color": "白色",
-        "discription": "测试车辆",
-        "plate": "京A12345",
-        "intention": "直行",
-        "length": 4.5,
-        "width": 1.8,
-        "height": 1.5,
-        "location_x": 20.0,
-        "location_y": 0.0,
-        "location_z": 0.0,
-        "rotation_row": 0.0,
-        "rotation_pitch": 0.0,
-        "rotation_yaw": 0.0,
-        "velocity": 45.5,
-        "acceleration": 0.2
-    }
-    
-    # 投影车辆
-    result = camera_manager.project_vehicle(vehicle_info, raw_images)
-    
-    if result['in_blind_spot']:
-        print("✗ 车辆在监控死角")
-        print(f"  {result['blind_spot_info']['description']}")
-    else:
-        print(f"✓ 车辆投影成功")
-        print(f"  可见摄像头: {result['visible_cameras']}")
-        for cam_id in result['visible_cameras']:
-            bbox = result['projections'][cam_id]['bbox']
-            print(f"  - {cam_id}: bbox={bbox}")
-            
-            # 保存带标定框的图像
-            image_with_bbox = result['projections'][cam_id]['image_with_bbox']
-            if image_with_bbox is not None:
-                output_path = f'test_output_{cam_id}.jpg'
-                cv2.imwrite(output_path, image_with_bbox)
-                print(f"    已保存图像: {output_path}")
-    
-    return result
+class FakeLLMInterface:
+    def extract_scene_model(
+        self,
+        camera_coverage,
+        vehicle_info,
+        traffic_command,
+        fact_pack,
+    ):
+        return {
+            "lane_count": 3,
+            "ego_lane_index": 2,
+            "lane_description": "位于中间车道",
+            "front_gap_status": "clear",
+            "left_gap_status": "clear",
+            "right_gap_status": "clear",
+            "roadside_pull_over_feasible": True,
+            "nearby_agents_summary": ["前方车流平稳"],
+            "conflict_risk": "medium" if traffic_command else "low",
+            "confidence": "medium",
+        }
+
+    def generate_structured_assessment(
+        self,
+        camera_coverage,
+        vehicle_info,
+        traffic_command,
+        fact_pack,
+        scene_model,
+        control_policy,
+        scene_type,
+    ):
+        if traffic_command:
+            command_text = traffic_command.get("command", "")
+            if "停" in command_text:
+                return {
+                    "scene_summary": "收到停车等待指令",
+                    "risk_level": "high",
+                    "primary_goal": "立即减速停车并等待",
+                    "key_constraints": ["交通管理指令优先", "优先停车避险"],
+                    "maneuver_type": "stop_and_wait",
+                    "lane_change_needed": False,
+                    "observation_needed": True,
+                    "must_wait": True,
+                }
+            return {
+                "scene_summary": "收到靠右等待指令",
+                "risk_level": "high",
+                "primary_goal": "靠右减速并等待",
+                "key_constraints": ["交通管理指令优先"],
+                "maneuver_type": "pull_over_right",
+                "lane_change_needed": True,
+                "observation_needed": True,
+                "must_wait": True,
+            }
+        return {
+            "scene_summary": "正常直行场景",
+            "risk_level": "low",
+            "primary_goal": "保持当前驾驶意图",
+            "key_constraints": ["保持稳定通行"],
+            "maneuver_type": "keep_lane",
+            "lane_change_needed": False,
+            "observation_needed": True,
+            "must_wait": False,
+        }
+
+    def realize_tasks(
+        self,
+        strategy,
+        assessment,
+        scene_model,
+        fact_pack,
+    ):
+        if strategy["strategy_id"] == "stop_immediately":
+            return [
+                {"description": "立即平稳减速并保持当前车道。", "time_limit": 4},
+                {"description": "在确保安全的前提下尽快停车。", "time_limit": 6},
+                {"description": "停车后保持等待并持续观察周边环境。", "time_limit": 12},
+            ]
+        if strategy["strategy_id"] == "pull_over_right_then_wait":
+            return [
+                {"description": "平稳减速并观察右侧通行空间。", "time_limit": 6},
+                {"description": "确认安全后向右靠近路边。", "time_limit": 8},
+                {"description": "在安全位置停车等待后续指令。", "time_limit": 12},
+            ]
+        return [
+            {"description": "保持当前车道和稳定速度。", "time_limit": 5},
+            {"description": "持续观察周边环境变化。", "time_limit": 8},
+        ]
 
 
-def test_blind_spot_detection(camera_manager):
-    """测试监控死角检测"""
-    print("\n" + "="*60)
-    print("测试3: 监控死角检测")
-    print("="*60)
-    
-    # 创建测试图像
-    raw_images = {
-        'camera_1': np.ones((1080, 1920, 3), dtype=np.uint8) * 200,
-        'camera_2': np.ones((1080, 1920, 3), dtype=np.uint8) * 180
-    }
-    
-    # 车辆在摄像头后方（监控死角）
-    vehicle_info = {
-        "type": "轿车",
-        "color": "红色",
-        "discription": "测试车辆",
-        "plate": "京B99999",
-        "intention": "直行",
-        "length": 4.0,
-        "width": 1.7,
-        "height": 1.4,
-        "location_x": -15.0,  # 负X方向
-        "location_y": 0.0,
-        "location_z": 0.0,
-        "rotation_row": 0.0,
-        "rotation_pitch": 0.0,
-        "rotation_yaw": 180.0,
-        "velocity": 40.0,
-        "acceleration": 0.0
-    }
-    
-    # 投影车辆
-    result = camera_manager.project_vehicle(vehicle_info, raw_images)
-    
-    if result['in_blind_spot']:
-        print("✓ 监控死角检测成功")
-        blind_spot_info = result['blind_spot_info']
-        print(f"  状态: {blind_spot_info['status']}")
-        print(f"  最近摄像头: {blind_spot_info['nearest_camera_name']}")
-        print(f"  距离: {blind_spot_info['distance_to_nearest']:.1f}米")
-        print(f"  描述: {blind_spot_info['description']}")
-    else:
-        print("✗ 应该检测到监控死角，但车辆仍可见")
-    
-    return result
+class WorkflowBasicTests(unittest.TestCase):
+    def setUp(self):
+        self.workflow = build_agent_workflow(
+            WorkflowNodes(
+                input_processor=InputProcessor(),
+                camera_manager=FakeCameraManager(),
+                llm_interface=FakeLLMInterface(),
+            )
+        )
+        self.raw_images = {"camera_1": np.zeros((64, 64, 3), dtype=np.uint8)}
+        self.vehicle_info = {
+            "type": "轿车",
+            "color": "白色",
+            "discription": "测试车辆",
+            "plate": "TEST123",
+            "intention": "直行通过路段",
+            "length": 4.5,
+            "width": 1.8,
+            "height": 1.5,
+            "location_x": 20.0,
+            "location_y": 0.0,
+            "location_z": 0.0,
+            "rotation_row": 0.0,
+            "rotation_pitch": 0.0,
+            "rotation_yaw": 0.0,
+            "velocity": 30.0,
+            "acceleration": 0.2,
+        }
+
+    def test_workflow_generates_tasks_without_command(self):
+        result = self.workflow.invoke(
+            {
+                "raw_images": self.raw_images,
+                "vehicle_info": self.vehicle_info,
+                "traffic_command": None,
+            }
+        )
+
+        self.assertEqual(result["scene_type"], "cruise")
+        self.assertEqual(result["risk_level"], "low")
+        self.assertFalse(result["should_intervene"])
+        self.assertGreaterEqual(len(result["tasks"]), 2)
+        self.assertEqual(result["lane_analysis"]["one_way_lane_count"], 3)
+        self.assertEqual(result["strategy"]["strategy_id"], "keep_lane_and_observe")
+
+    def test_workflow_prioritizes_traffic_command(self):
+        result = self.workflow.invoke(
+            {
+                "raw_images": self.raw_images,
+                "vehicle_info": self.vehicle_info,
+                "traffic_command": "前方交警指挥靠右减速通行",
+            }
+        )
+
+        self.assertEqual(result["scene_type"], "traffic_command")
+        self.assertTrue(result["should_intervene"])
+        self.assertEqual(result["strategy"]["execution_mode"], "traffic_command")
+        self.assertEqual(result["strategy"]["strategy_id"], "pull_over_right_then_wait")
+        self.assertGreaterEqual(len(result["tasks"]), 3)
+
+    def test_workflow_supports_stop_immediately_strategy(self):
+        result = self.workflow.invoke(
+            {
+                "raw_images": self.raw_images,
+                "vehicle_info": self.vehicle_info,
+                "traffic_command": "前方临时管制，请立即停车等待指令",
+            }
+        )
+
+        self.assertEqual(result["scene_type"], "traffic_command")
+        self.assertEqual(result["strategy"]["strategy_id"], "stop_immediately")
+        self.assertEqual(result["strategy"]["execution_mode"], "safety_guidance")
+        self.assertTrue(any("停车" in task["description"] for task in result["tasks"]))
 
 
-def test_input_processor():
-    """测试输入处理器"""
-    print("\n" + "="*60)
-    print("测试4: 输入处理器")
-    print("="*60)
-    
-    processor = InputProcessor()
-    
-    # 测试车辆信息解析
-    vehicle_data = {
-        "type": "SUV",
-        "color": "黑色",
-        "discription": "大型SUV",
-        "plate": "京C88888",
-        "intention": "左转",
-        "length": 5.0,
-        "width": 2.0,
-        "height": 1.8,
-        "location_x": 15.0,
-        "location_y": -2.0,
-        "location_z": 0.0,
-        "rotation_row": 0.0,
-        "rotation_pitch": 0.0,
-        "rotation_yaw": -15.0,
-        "velocity": 25.0,
-        "acceleration": -0.5
-    }
-    
-    parsed_info = processor.parse_vehicle_info(vehicle_data)
-    print("✓ 车辆信息解析成功")
-    
-    # 生成车辆摘要
-    summary = processor.format_vehicle_summary(parsed_info)
-    print(f"  车辆摘要: {summary}")
-    
-    # 测试交通指令解析
-    command = "前方道路施工，请减速慢行"
-    command_info = processor.parse_traffic_command(command)
-    print(f"\n✓ 交通指令解析成功")
-    print(f"  指令: {command_info['command']}")
-    print(f"  优先级: {command_info['priority']}")
-    
-    return processor
-
-
-def test_multi_camera_scenario(camera_manager):
-    """测试多摄像头场景"""
-    print("\n" + "="*60)
-    print("测试5: 多摄像头场景")
-    print("="*60)
-    
-    # 创建测试图像
-    raw_images = {
-        'camera_1': np.ones((1080, 1920, 3), dtype=np.uint8) * 200,
-        'camera_2': np.ones((1080, 1920, 3), dtype=np.uint8) * 180
-    }
-    
-    # 车辆位于中间位置，可能被两个摄像头看到
-    vehicle_info = {
-        "type": "货车",
-        "color": "蓝色",
-        "discription": "中型货车",
-        "plate": "京D77777",
-        "intention": "直行",
-        "length": 6.0,
-        "width": 2.2,
-        "height": 2.5,
-        "location_x": 10.0,
-        "location_y": 0.0,
-        "location_z": 0.0,
-        "rotation_row": 0.0,
-        "rotation_pitch": 0.0,
-        "rotation_yaw": 0.0,
-        "velocity": 30.0,
-        "acceleration": 0.0
-    }
-    
-    # 投影车辆
-    result = camera_manager.project_vehicle(vehicle_info, raw_images)
-    
-    if not result['in_blind_spot']:
-        num_cameras = len(result['visible_cameras'])
-        print(f"✓ 车辆在 {num_cameras} 个摄像头视野内")
-        for cam_id in result['visible_cameras']:
-            cam_name = result['projections'][cam_id]['camera_name']
-            bbox = result['projections'][cam_id]['bbox']
-            print(f"  - {cam_name}: bbox={bbox}")
-    else:
-        print("✗ 车辆不在任何摄像头视野内")
-    
-    return result
-
-
-def main():
-    """运行所有测试"""
-    print("\n" + "="*60)
-    print("路侧智能体基础功能测试")
-    print("="*60)
-    
-    try:
-        # 测试1: 摄像头管理器
-        camera_manager = test_camera_manager()
-        
-        # 测试2: 车辆投影
-        test_vehicle_projection(camera_manager)
-        
-        # 测试3: 监控死角检测
-        test_blind_spot_detection(camera_manager)
-        
-        # 测试4: 输入处理器
-        test_input_processor()
-        
-        # 测试5: 多摄像头场景
-        test_multi_camera_scenario(camera_manager)
-        
-        print("\n" + "="*60)
-        print("所有测试通过！✓")
-        print("="*60)
-        print("\n提示: 要测试完整的LLM功能，请设置API密钥并运行:")
-        print("  python examples/agent_usage_example.py")
-        print("="*60)
-        
-    except Exception as e:
-        print(f"\n✗ 测试失败: {e}")
-        import traceback
-        traceback.print_exc()
-        return 1
-    
-    return 0
-
-
-if __name__ == '__main__':
-    exit(main())
+if __name__ == "__main__":
+    unittest.main()

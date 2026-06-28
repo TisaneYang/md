@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package roadside;
+
+enum Urgency {
+  URGENCY_UNSPECIFIED = 0;
+  URGENCY_LOW = 1;
+  URGENCY_MEDIUM = 2;
+  URGENCY_HIGH = 3;
+  URGENCY_URGENT = 4;
+}
+
+enum ObstacleType {
+  OBSTACLE_TYPE_UNSPECIFIED = 0;
+  OBSTACLE_TYPE_ROAD_BLOCK = 1;
+  OBSTACLE_TYPE_PARKING_VEHICLE = 2;
+  OBSTACLE_TYPE_HUMAN = 3;
+  OBSTACLE_TYPE_OTHERS = 4;
+}
+
+enum ImpactLevel {
+  IMPACT_LEVEL_UNSPECIFIED = 0;
+  IMPACT_LEVEL_NONE = 1;
+  IMPACT_LEVEL_SLIGHTLY = 2;
+  IMPACT_LEVEL_MEDIUM = 3;
+  IMPACT_LEVEL_HEAVY = 4;
+}
+
+enum DangerType {
+  DANGER_TYPE_UNSPECIFIED = 0;
+  DANGER_TYPE_UNPREDICTABLE_PEDESTRIANS = 1;
+  DANGER_TYPE_FAST_VEHICLES = 2;
+  DANGER_TYPE_BLIND_SPOTS = 3;
+  DANGER_TYPE_OTHERS = 4;
+}
+
+enum PresenceFlag {
+  PRESENCE_FLAG_UNSPECIFIED = 0;
+  PRESENCE_FLAG_PRESENT = 1;
+}
+
+message MessagesFixed {
+  repeated MessageFixed messages = 1;
+}
+
+message MessageFixed {
+  int64 time = 1;
+  Urgency urgency = 2;
+  repeated ConflictFixed conflicts = 3;
+  repeated ObstacleFixed obstacles = 4;
+  repeated DangerFixed dangers = 5;
+  bool emergency_stop = 6;
+  repeated TaskFixed tasks = 7;
+  PresenceFlag top_level_description = 8;
+}
+
+message ConflictFixed {
+  double dist = 1;
+  PresenceFlag item = 2;
+}
+
+message ObstacleFixed {
+  ObstacleType type = 1;
+  repeated double position = 2;
+  ImpactLevel impact = 3;
+  PresenceFlag description = 4;
+}
+
+message DangerFixed {
+  DangerType type = 1;
+  Urgency degree = 2;
+  repeated double position = 3;
+  PresenceFlag description = 4;
+}
+
+message TaskFixed {
+  int32 time_limit = 1;
+  PresenceFlag description = 2;
+}
+
+message MixedEncodedPayload {
+  bytes fixed_proto = 1;
+  string retained_json = 2;
+}

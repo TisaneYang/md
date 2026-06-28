@@ -76,3 +76,12 @@ class DataManager:
                 "has_vehicle_info": self._vehicle_info is not None,
                 "has_traffic_command": self._traffic_command is not None
             }
+
+    def get_context_snapshot(self) -> Dict:
+        """原子化获取当前分析所需的全部上下文。"""
+        with self._lock:
+            return {
+                "images": self._images.copy(),
+                "vehicle_info": self._vehicle_info,
+                "traffic_command": self._traffic_command,
+            }
