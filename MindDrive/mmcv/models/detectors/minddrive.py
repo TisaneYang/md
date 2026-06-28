@@ -863,6 +863,8 @@ class Minddrive(MVXTwoStageDetector):
                 raise TypeError('{} must be a list, but got {}'.format(
                     name, type(var)))
         for key in data:
+            if key == 'pilot_control':
+                continue
             if key not in ['img', 'input_ids','gt_bboxes_3d','vlm_labels']:
                 data[key] = data[key][0][0].unsqueeze(0)
             else:
@@ -934,6 +936,9 @@ class Minddrive(MVXTwoStageDetector):
             history_input_output_id = []
             meta_action = {}
             meta_action_info ={}
+            pilot_control = data.get('pilot_control', None) if hasattr(data, 'get') else None
+            raw_speed_command = None
+            final_speed_command = None
             vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1) # (1, 513, 4096)
             for i, input_ids in enumerate(data['input_ids'][0]):
                 input_ids = input_ids.unsqueeze(0)
@@ -977,6 +982,23 @@ class Minddrive(MVXTwoStageDetector):
                     else:
                         action_speed_idx = torch.argmax(action_logits).item()
                     speed_command = SPEED_MAPPING.get(action_speed_idx, '<unknown_speed>')
+                    raw_speed_command = speed_command
+                    final_speed_command = speed_command
+                    if pilot_control is not None:
+                        try:
+                            from PilotAgent.pilot_agent.speed_middlewares import build_speed_middleware
+
+                            # Pilot speed middleware maps MindDrive's post-inference speed command only.
+                            middleware = build_speed_middleware(pilot_control.get('speed_middleware'))
+                            final_speed_command = middleware.map(
+                                raw_speed_command=raw_speed_command,
+                                ego_speed_mps=pilot_control.get('ego_speed_mps'),
+                            )
+                            speed_command = final_speed_command
+                        except Exception:
+                            # Middleware failures must not interrupt the original MindDrive control flow.
+                            final_speed_command = raw_speed_command
+                            speed_command = raw_speed_command
 
                     std_cmd_tensors = data['ego_fut_cmd'][:, 0, 0] 
                     
@@ -1206,6 +1228,9 @@ class Minddrive(MVXTwoStageDetector):
                 if self.use_meta_action:
                     lane_results[0]['speed_value'] = speed_value
                     lane_results[0]['path_value'] = path_value
+                    lane_results[0]['pilot_raw_speed_command'] = raw_speed_command
+                    lane_results[0]['pilot_final_speed_command'] = final_speed_command
+                    lane_results[0]['pilot_control'] = pilot_control
                     # for Rl
 
                     if self.rl_training:

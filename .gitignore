@@ -33,6 +33,7 @@ MindDrive/ckpts/
 MindDrive/work_dirs/
 MindDrive/build/
 Bench2Drive/scenario_runner/srunner/metrics/data/
+doc-memory/
 
 # Python / build artifacts
 __pycache__/

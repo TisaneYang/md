@@ -1,0 +1,28 @@
+{
+  "enabled": false,
+  "agent_interval_ticks": 10,
+  "upstream": {
+    "type": "http_polling",
+    "url": "http://127.0.0.1:8765/latest",
+    "timeout_ms": 100
+  },
+  "cloud": {
+    "provider": "openai_compatible",
+    "base_url": null,
+    "api_key_env": "OPENAI_API_KEY",
+    "model": "gpt-4o",
+    "timeout_ms": 800,
+    "extra": {}
+  },
+  "context": {
+    "window_size": 8,
+    "save_images_in_context": false,
+    "save_environment_summary": true,
+    "image_jpeg_quality": 70
+  },
+  "logging": {
+    "path": "./pilot_logs/pilot_decisions.jsonl",
+    "enabled": true
+  }
+}
+

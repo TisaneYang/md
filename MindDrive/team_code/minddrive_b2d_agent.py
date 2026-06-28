@@ -9,6 +9,7 @@ import pathlib
 import time
 import cv2
 import carla
+import sys
 from collections import deque
 import math
 from collections import OrderedDict
@@ -87,6 +88,7 @@ class MinddriveAgent(autonomous_agent.AutonomousAgent):
         self.stop_time = 0
         self.takeover_time = 0
         self.save_path = None
+        self._pilot_map = None
         self._im_transform = T.Compose([T.ToTensor(), T.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])])
         self.lat_ref, self.lon_ref = 42.0, 2.0
         control = carla.VehicleControl()
@@ -94,6 +96,18 @@ class MinddriveAgent(autonomous_agent.AutonomousAgent):
         control.throttle = 0.0
         control.brake = 0.0	
         self.prev_control = control
+        self.pilot_runtime = None
+        pilot_config = os.environ.get('PILOT_AGENT_CONFIG', None)
+        if pilot_config:
+            try:
+                repo_root = pathlib.Path(__file__).resolve().parents[2]
+                if str(repo_root) not in sys.path:
+                    sys.path.insert(0, str(repo_root))
+                from PilotAgent.pilot_agent.runtime import PilotRuntime
+
+                self.pilot_runtime = PilotRuntime.from_config(pilot_config)
+            except Exception as exc:
+                print(f"[PilotAgent] disabled because initialization failed: {exc}")
         if SAVE_PATH is not None:
             now = datetime.datetime.now()
             # string = pathlib.Path(os.environ['ROUTES']).stem + '_'
@@ -330,6 +344,7 @@ class MinddriveAgent(autonomous_agent.AutonomousAgent):
         if not self.initialized:
             self._init()
         tick_data = self.tick(input_data)
+        pilot_vehicle_position = self._get_pilot_vehicle_position()
         results = {}
         results['lidar2img'] = []
         results['lidar2cam'] = []
@@ -365,6 +380,37 @@ class MinddriveAgent(autonomous_agent.AutonomousAgent):
         command = tick_data['command_curr']
         results['command'] = command2nohot(tick_data['command_curr'])
         results['ego_fut_cmd'] = command2hot(tick_data['command_curr'])
+        pilot_decision = None
+        if self.pilot_runtime is not None:
+            if self.pilot_runtime.should_request_decision(self.step):
+                pilot_decision = self.pilot_runtime.step(
+                    tick=self.step,
+                    timestamp=timestamp,
+                    images={
+                        'CAM_FRONT': tick_data['imgs']['CAM_FRONT'],
+                        'CAM_FRONT_LEFT': tick_data['imgs']['CAM_FRONT_LEFT'],
+                        'CAM_FRONT_RIGHT': tick_data['imgs']['CAM_FRONT_RIGHT'],
+                        'CAM_BACK': tick_data['imgs']['CAM_BACK'],
+                    },
+                    ego_speed_mps=tick_data['speed'],
+                    vehicle_position=pilot_vehicle_position,
+                )
+            else:
+                pilot_decision = self.pilot_runtime.last_decision
+            if pilot_decision is not None and pilot_decision.path_action:
+                try:
+                    if self.pilot_runtime.is_path_action_allowed(pilot_decision.path_action, pilot_vehicle_position):
+                        # Pilot overrides only the navigation meta-command; low-level control remains in MindDrive/PID.
+                        results['ego_fut_cmd'] = self.pilot_runtime.path_to_ego_fut_cmd(
+                            pilot_decision.path_action
+                        )
+                    else:
+                        print(
+                            "[PilotAgent] ignored path action outside CARLA junction constraints: "
+                            f"{pilot_decision.path_action}, vehicle_position={pilot_vehicle_position}"
+                        )
+                except Exception as exc:
+                    print(f"[PilotAgent] ignored invalid path action: {exc}")
   
         theta_to_lidar = raw_theta
         command_near_xy = np.array([tick_data['command_near_xy'][0]-can_bus[0],-tick_data['command_near_xy'][1]-can_bus[1]])
@@ -403,8 +449,30 @@ class MinddriveAgent(autonomous_agent.AutonomousAgent):
                         # print(data[0][i][k])
                         data[0][i][k] = data[0][i][k].to(self.device)
                     
+        if self.pilot_runtime is not None and pilot_decision is not None:
+            # pilot_control carries post-inference speed middleware config; it does not alter VLM logits.
+            input_data_batch['pilot_control'] = self.pilot_runtime.model_control(
+                pilot_decision,
+                tick_data['speed'],
+            )
+
         custom_wrap_fp16_model(self.model)
         output_data_batch = self.model(input_data_batch, return_loss=False)
+        if self.pilot_runtime is not None:
+            pts_bbox = output_data_batch[0].get('pts_bbox', {})
+            self.pilot_runtime.log_tick(
+                tick=self.step,
+                timestamp=timestamp,
+                upstream=self.pilot_runtime.current_upstream,
+                decision=pilot_decision,
+                model_debug={
+                    'vehicle_position': pilot_vehicle_position,
+                    'pilot_raw_speed_command': pts_bbox.get('pilot_raw_speed_command', None),
+                    'pilot_final_speed_command': pts_bbox.get('pilot_final_speed_command', None),
+                    'speed_value': pts_bbox.get('speed_value', None),
+                    'path_value': pts_bbox.get('path_value', None),
+                },
+            )
         out_truck = output_data_batch[0]['pts_bbox']['ego_fut_preds'].cpu().numpy()
         out_truck_path = output_data_batch[0]['pts_bbox']['pw_ego_fut_pred'].cpu().numpy()
         steer_traj, throttle_traj, brake_traj, metadata_traj = self.pidcontroller.control_pid(out_truck_path,out_truck, tick_data['speed'], local_command_xy)
@@ -435,6 +503,55 @@ class MinddriveAgent(autonomous_agent.AutonomousAgent):
             self.save(tick_data, result_vis)
         self.prev_control = control
         return control
+
+    def _get_pilot_vehicle_position(self):
+        try:
+            hero_actor = getattr(self, 'hero_actor', None)
+            if hero_actor is None:
+                self.get_hero()
+                hero_actor = getattr(self, 'hero_actor', None)
+            if hero_actor is None:
+                return {
+                    'is_in_junction': None,
+                    'current_lane_id': None,
+                    'has_left_driving_lane': None,
+                    'has_right_driving_lane': None,
+                }
+
+            location = hero_actor.get_location()
+            if self._pilot_map is None:
+                from rl_projects.scenario_runner.srunner.scenariomanager.carla_data_provider import CarlaDataProvider
+
+                self._pilot_map = CarlaDataProvider.get_map()
+            waypoint = self._pilot_map.get_waypoint(location) if self._pilot_map is not None else None
+
+            def has_adjacent_driving_lane(adjacent_waypoint):
+                current_lane_id = getattr(waypoint, 'lane_id', None)
+                adjacent_lane_id = getattr(adjacent_waypoint, 'lane_id', None)
+                return bool(
+                    waypoint is not None
+                    and adjacent_waypoint is not None
+                    and current_lane_id is not None
+                    and adjacent_lane_id is not None
+                    and getattr(adjacent_waypoint, 'lane_type', None) == carla.LaneType.Driving
+                    and current_lane_id * adjacent_lane_id > 0
+                )
+
+            left_lane = waypoint.get_left_lane() if waypoint is not None and hasattr(waypoint, 'get_left_lane') else None
+            right_lane = waypoint.get_right_lane() if waypoint is not None and hasattr(waypoint, 'get_right_lane') else None
+            return {
+                'is_in_junction': None if waypoint is None else bool(getattr(waypoint, 'is_junction', False)),
+                'current_lane_id': None if waypoint is None else getattr(waypoint, 'lane_id', None),
+                'has_left_driving_lane': None if waypoint is None else has_adjacent_driving_lane(left_lane),
+                'has_right_driving_lane': None if waypoint is None else has_adjacent_driving_lane(right_lane),
+            }
+        except Exception:
+            return {
+                'is_in_junction': None,
+                'current_lane_id': None,
+                'has_left_driving_lane': None,
+                'has_right_driving_lane': None,
+            }
 
     def save(self, tick_data, result_vis=None):
         frame = self.step // 10
