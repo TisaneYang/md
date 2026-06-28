@@ -19,11 +19,53 @@ def send_vehicle_info(server_url: str, vehicle_info: dict):
     response = requests.post(url, json=vehicle_info)
 
     if response.status_code == 200:
-        print(f"车辆信息发送成功: {response.json()}")
+        payload = response.json()
+        print("车辆信息发送成功")
+        print(f"- risk_level: {payload.get('risk_level')}")
+        print(f"- scene_type: {payload.get('scene_type')}")
+        print(f"- should_intervene: {payload.get('should_intervene')}")
+        print(f"- task_count: {len(payload.get('tasks', []))}")
+        print(f"- summary: {payload.get('advice')}")
     else:
         print(f"车辆信息发送失败: {response.status_code} - {response.text}")
 
     return response
+
+
+def format_vehicle_message(data: dict) -> str:
+    """Format a structured server message for terminal display."""
+    lines = []
+    lines.append("=" * 50)
+    lines.append("收到路侧任务规划:")
+    lines.append(f"风险等级: {data.get('risk_level', 'unknown')}")
+    lines.append(f"场景类型: {data.get('scene_type', 'unknown')}")
+    lines.append(f"是否干预: {data.get('should_intervene', False)}")
+    if data.get("traffic_command"):
+        lines.append(f"交通指令: {data.get('traffic_command')}")
+
+    summary = data.get('description') or data.get('advice') or data.get('instruction', '')
+    if summary:
+        lines.append(f"总体说明: {summary}")
+
+    tasks = data.get('tasks', [])
+    if tasks:
+        lines.append("任务列表:")
+        for index, task in enumerate(tasks, start=1):
+            lines.append(
+                f"  {index}. {task.get('description', '')} "
+                f"(时限: {task.get('time_limit', '?')}s)"
+            )
+    else:
+        instruction = data.get('instruction', '')
+        if instruction:
+            lines.append(f"兼容指令: {instruction}")
+
+    plan = data.get('plan')
+    if isinstance(plan, dict) and plan.get('objective'):
+        lines.append(f"规划目标: {plan.get('objective')}")
+
+    lines.append("=" * 50)
+    return "\n".join(lines)
 
 
 def start_receiver(port: int = 8000):
@@ -32,13 +74,9 @@ def start_receiver(port: int = 8000):
 
     @app.route('/instruct', methods=['POST'])
     def receive_instruction():
-        data = request.get_json()
-        instruction = data.get('instruction', '')
-        print(f"\n{'='*50}")
-        print(f"收到驾驶建议:")
-        print(f"{instruction}")
-        print(f"{'='*50}\n")
-        return jsonify({"status": "received"})
+        data = request.get_json() or {}
+        print("\n" + format_vehicle_message(data) + "\n")
+        return jsonify({"status": "received", "task_count": len(data.get("tasks", []))})
 
     print(f"车端接收服务启动，监听端口 {port}...")
     app.run(host='0.0.0.0', port=port)
