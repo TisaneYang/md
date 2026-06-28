@@ -1,0 +1,18 @@
+{
+    "type": "轿车",
+    "color": "白色",
+    "discription": "比亚迪秦Plus白色款，绿色牌照新能源汽车",
+    "plate": "京A8694A",
+    "intention": "直行通过路段",
+    "length": 2.5,
+    "width": 1.2,
+    "height": 0.8,
+    "location_x": 100.10,
+    "location_y": 100.20,
+    "location_z": 100.30,
+    "rotation_row": 30.30,
+    "rotation_pitch": 40.40,
+    "rotation_yaw": 50.50,
+    "velocity": 45.55,
+    "acceleration": 0.20
+}
