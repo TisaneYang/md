@@ -7,6 +7,7 @@ to create the hook, call it once per tick, and destroy it with the scenario.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import threading
 from typing import Any, Dict, List, Optional
@@ -79,7 +80,12 @@ class Bench2DriveRoadsideHook:
             return
 
         self.perception_manager.spawn_cameras(warmup_ticks=self.warmup_ticks)
-        runtime_config_path = self.config_root / "roadside_agent.json"
+        runtime_config_override = os.environ.get("ROADSIDE_AGENT_CONFIG")
+        runtime_config_path = (
+            Path(runtime_config_override)
+            if runtime_config_override
+            else self.config_root / "roadside_agent.json"
+        )
         self.runtime_config = RoadsideRuntimeConfig.from_path(runtime_config_path)
         self.runtime = RoadsideRuntime(self.runtime_config, command_client=self.command_client)
         self._start_vehicle_state_server()
