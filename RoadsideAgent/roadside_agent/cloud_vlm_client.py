@@ -26,12 +26,14 @@ class OpenAICompatibleClient(CloudVlmClient):
     def __init__(self, config: CloudConfig) -> None:
         self.base_url = (config.base_url or "https://api.openai.com/v1").rstrip("/")
         self.api_key = os.environ.get(config.api_key_env or "OPENAI_API_KEY", "")
+        self.model = config.model or "gpt-4o"
         self.timeout = config.timeout_ms / 1000.0
         self.extra = dict(config.extra)
 
     def decide(self, batch_input: RoadsideBatchInput, images: list[dict[str, Any]]) -> RoadsideDecision:
         messages = self._to_openai_messages(batch_input=batch_input, images=images)
         payload = {
+            "model": self.model,
             "messages": messages,
             "response_format": {"type": "json_object"},
         }

@@ -84,7 +84,10 @@ class Bench2DriveRoadsideHook:
         self.runtime = RoadsideRuntime(self.runtime_config, command_client=self.command_client)
         self._start_vehicle_state_server()
         self.enabled = True
-        print(f"[RoadsideAgent] enabled for {self.route_name}", flush=True)
+        print(
+            f"[RoadsideAgent] enabled for {self.route_name}, output={self.perception_manager.run_output_dir}",
+            flush=True,
+        )
 
     def tick(self, tick_index: int) -> None:
         """Run RoadsideAgent on configured low-frequency ticks."""
@@ -97,6 +100,7 @@ class Bench2DriveRoadsideHook:
             self._refresh_registered_vehicle_actors(tick_index)
             perception = self.perception_manager.perceive_targets(
                 self.vehicle_registry.active_actor_map(),
+                sample_index=tick_index,
             )
             world_snapshot = self.world.get_snapshot()
             timestamp = float(world_snapshot.timestamp.elapsed_seconds)

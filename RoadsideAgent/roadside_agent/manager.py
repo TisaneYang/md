@@ -6,10 +6,12 @@ owns roadside camera capture, target actor projection, and bbox visualization.
 
 from __future__ import annotations
 
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
+import cv2
 import yaml
 
 from .camera import RoadsideCameraSensor, RoadsideCameraSpec
@@ -40,12 +42,15 @@ class RoadsidePerceptionManager:
         bbox_thickness: int = 4,
         sample_interval_ticks: int = 10,
         scene_description: str = "",
+        scene_name: str = "default_scene",
+        output_root: Optional[str | Path] = None,
     ) -> None:
         self.world = world
         self.near_clip = near_clip
         self.bbox_thickness = bbox_thickness
         self.sample_interval_ticks = max(1, int(sample_interval_ticks))
         self.scene_description = str(scene_description or "")
+        self.scene_name = str(scene_name or "default_scene")
         self.cameras: List[RoadsideCameraSensor] = [
             RoadsideCameraSensor(world, spec) for spec in camera_specs
         ]
@@ -56,11 +61,25 @@ class RoadsidePerceptionManager:
             )
             for camera in self.cameras
         }
+        self.output_root = (
+            Path(output_root)
+            if output_root is not None
+            else Path(__file__).resolve().parents[1] / "output"
+        )
+        self.run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        self.run_output_dir = self.output_root / self.scene_name / self.run_timestamp
+        self.camera_output_dirs: Dict[str, Path] = {
+            camera.spec.camera_id: self.run_output_dir / camera.spec.camera_id
+            for camera in self.cameras
+        }
+        for directory in self.camera_output_dirs.values():
+            directory.mkdir(parents=True, exist_ok=True)
 
     @classmethod
     def from_config(cls, world: Any, config_path: str | Path) -> "RoadsidePerceptionManager":
         """Build a manager from a YAML config file."""
-        with open(config_path, "r", encoding="utf-8") as file:
+        resolved_config_path = Path(config_path)
+        with open(resolved_config_path, "r", encoding="utf-8") as file:
             config = yaml.safe_load(file) or {}
 
         camera_specs = [
@@ -87,6 +106,7 @@ class RoadsidePerceptionManager:
             bbox_thickness=int(config.get("visualization", {}).get("bbox_thickness", 4)),
             sample_interval_ticks=int(config.get("sampling", {}).get("interval_ticks", 10)),
             scene_description=str(config.get("scene_description", "") or ""),
+            scene_name=str(config.get("route_name") or resolved_config_path.stem),
         )
 
     @classmethod
@@ -124,7 +144,12 @@ class RoadsidePerceptionManager:
         """Return whether RoadsideAgent should run on this simulation tick."""
         return int(tick_index) % self.sample_interval_ticks == 0
 
-    def perceive_target(self, target_actor: Any, vehicle_id: Optional[str] = None) -> Dict[str, Any]:
+    def perceive_target(
+        self,
+        target_actor: Any,
+        vehicle_id: Optional[str] = None,
+        sample_index: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """Capture latest roadside images and draw the target vehicle bbox."""
         outputs: Dict[str, CameraPerception] = {}
         visible_cameras = []
@@ -159,6 +184,14 @@ class RoadsidePerceptionManager:
                 projection=projection,
                 frame=camera.get_latest_frame(),
             )
+            self._save_camera_image(
+                camera_id=camera.spec.camera_id,
+                vehicle_id=resolved_vehicle_id,
+                frame=outputs[camera.spec.camera_id].frame,
+                image=image_with_bbox,
+                visible=projection.visible,
+                sample_index=sample_index,
+            )
 
         return {
             "vehicle_id": resolved_vehicle_id,
@@ -167,7 +200,11 @@ class RoadsidePerceptionManager:
             "cameras": outputs,
         }
 
-    def perceive_targets(self, target_actors: Mapping[str, Any]) -> Dict[str, Any]:
+    def perceive_targets(
+        self,
+        target_actors: Mapping[str, Any],
+        sample_index: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """Perceive multiple vehicles in a batch without defining policy logic.
 
         The output is keyed by caller-provided vehicle id. Whether future Agent
@@ -176,7 +213,11 @@ class RoadsidePerceptionManager:
         """
         return {
             "vehicles": {
-                str(vehicle_id): self.perceive_target(actor, vehicle_id=str(vehicle_id))
+                str(vehicle_id): self.perceive_target(
+                    actor,
+                    vehicle_id=str(vehicle_id),
+                    sample_index=sample_index,
+                )
                 for vehicle_id, actor in target_actors.items()
             }
         }
@@ -184,6 +225,27 @@ class RoadsidePerceptionManager:
     def destroy(self) -> None:
         for camera in self.cameras:
             camera.destroy()
+
+    def _save_camera_image(
+        self,
+        camera_id: str,
+        vehicle_id: str,
+        frame: Optional[int],
+        image: Any,
+        visible: bool,
+        sample_index: Optional[int] = None,
+    ) -> None:
+        if image is None:
+            return
+
+        camera_dir = self.camera_output_dirs[camera_id]
+        frame_text = "unknown" if frame is None else f"{int(frame):06d}"
+        parts = [f"frame_{frame_text}", f"vehicle_{vehicle_id}"]
+        if sample_index is not None:
+            parts.insert(0, f"tick_{int(sample_index):06d}")
+        parts.append("visible" if visible else "not_visible")
+        output_path = camera_dir / ("_".join(parts) + ".jpg")
+        cv2.imwrite(str(output_path), image)
 
 
 class RoadsideAgent:
@@ -201,12 +263,19 @@ class RoadsideAgent:
         self,
         target_actor: Any = None,
         target_actors: Optional[Mapping[str, Any]] = None,
+        sample_index: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Return perception output only until business logic is defined."""
         if target_actors is not None:
-            perception = self.perception_manager.perceive_targets(target_actors)
+            perception = self.perception_manager.perceive_targets(
+                target_actors,
+                sample_index=sample_index,
+            )
         elif target_actor is not None:
-            perception = self.perception_manager.perceive_target(target_actor)
+            perception = self.perception_manager.perceive_target(
+                target_actor,
+                sample_index=sample_index,
+            )
         else:
             raise ValueError("target_actor or target_actors must be provided")
 

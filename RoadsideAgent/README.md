@@ -214,6 +214,30 @@ OpenAI-compatible provider 下，请求中的 user content 采用与 PilotAgent 
 
 这样模型可以将每张带绿色框的图像与对应车辆绑定起来。
 
+## 路侧相机输出目录
+
+为了检查标定框绘制效果，RoadsidePerceptionManager 现在会在 `RoadsideAgent/output/` 下自动保存每次运行的带框图像。
+
+目录结构如下：
+
+```text
+RoadsideAgent/output/
+└── RouteScenario_0/
+    └── 20260629_153045_123456/
+        ├── roadside_01/
+        │   ├── tick_000010_frame_000321_vehicle_42_visible.jpg
+        │   └── ...
+        └── roadside_02/
+            └── ...
+```
+
+说明：
+
+- 第一层目录是场景名，例如 `RouteScenario_0`。
+- 第二层目录是本次运行的时间戳，因此同一场景的多次运行不会互相覆盖。
+- 第三层目录按路侧摄像头 `camera_id` 分开保存。
+- 每张图都是当前采样帧的 `image_with_bbox`，文件名里包含 `tick`、CARLA sensor `frame`、`vehicle_id`，以及该车在该摄像头下是否可见。
+
 ## 与旧版的关键差异
 
 - 旧版目标车定位依赖外部车辆信息 JSON；新版通过车辆编号维护 CARLA actor，再直接读取 actor。
