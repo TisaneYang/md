@@ -48,6 +48,29 @@ POST /upstream
 GET  /latest
 ```
 
+## Roadside Reporting
+
+PilotAgent can optionally report its latest `upstream` and `task_status` to RoadsideAgent after each cloud decision tick.
+
+Configure `roadside_report` in `configs/pilot_agent.json`:
+
+```json
+{
+  "roadside_report": {
+    "enabled": false,
+    "url": "http://127.0.0.1:8890/vehicles/state",
+    "endpoint": "127.0.0.1:9101",
+    "timeout_ms": 200
+  }
+}
+```
+
+Behavior:
+
+- After a normal PilotAgent inference, it reports `vehicle_id`, `timestamp`, `endpoint`, `upstream`, and `task_status`.
+- If the decision tick is reached but inference is skipped because `current_upstream is None`, it sends a heartbeat report with `vehicle_id`, `timestamp`, and `endpoint`.
+- The ego vehicle id is taken from the CARLA hero actor in MindDrive's `run_step()`.
+
 ## Cloud Providers
 
 `pilot_agent/cloud_vlm_client.py` supports OpenAI-compatible chat-completions APIs,

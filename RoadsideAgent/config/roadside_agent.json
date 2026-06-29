@@ -1,0 +1,25 @@
+{
+  "enabled": false,
+  "cloud": {
+    "provider": "openai_compatible",
+    "base_url": null,
+    "api_key_env": "OPENAI_API_KEY",
+    "model": "gpt-4o",
+    "timeout_ms": 1200,
+    "extra": {}
+  },
+  "context": {
+    "window_size": 8,
+    "save_images_in_context": false
+  },
+  "logging": {
+    "path": "./roadside_logs/roadside_decisions.jsonl",
+    "enabled": true
+  },
+  "server": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8890,
+    "stale_after_seconds": 2.0
+  }
+}

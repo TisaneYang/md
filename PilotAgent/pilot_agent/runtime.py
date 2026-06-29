@@ -8,6 +8,7 @@ from .config import PilotConfig
 from .context import PilotContext
 from .logger import PilotLogger
 from .path_mapping import is_path_action_allowed, path_to_ego_fut_cmd
+from .roadside_reporter import RoadsideReporter
 from .types import PilotDecision, UpstreamCommand
 from .upstream import (
     InMemoryHttpUpstreamProvider,
@@ -41,9 +42,11 @@ class PilotRuntime:
             image_jpeg_quality=config.context.image_jpeg_quality,
         )
         self.logger = PilotLogger(config.logging.path, config.logging.enabled)
+        self.roadside_reporter = RoadsideReporter(config.roadside_report)
         self.current_upstream: Optional[UpstreamCommand] = None
         self.last_decision: Optional[PilotDecision] = None
         self.last_error: Optional[str] = None
+        self.current_vehicle_id: Optional[str] = None
 
     @classmethod
     def from_config(cls, path: Optional[str]) -> "PilotRuntime":
@@ -72,6 +75,7 @@ class PilotRuntime:
             self.current_upstream = new_upstream
 
         if self.current_upstream is None:
+            self._report_heartbeat(timestamp)
             return self.last_decision
 
         try:
@@ -91,6 +95,7 @@ class PilotRuntime:
                 decision=None,
                 fallback_reason=self.last_error,
             )
+            self._report_heartbeat(timestamp)
             return self.last_decision
 
         self.last_decision = decision
@@ -100,10 +105,14 @@ class PilotRuntime:
             vehicle_position=vehicle_position or {},
             images=images if self.config.context.save_images_in_context else None,
         )
+        self._report_decision(timestamp, decision)
         return decision
 
     def set_upstream(self, command: UpstreamCommand) -> None:
         self.current_upstream = command
+
+    def set_vehicle_identity(self, vehicle_id: Optional[str]) -> None:
+        self.current_vehicle_id = None if vehicle_id is None else str(vehicle_id)
 
     def path_to_ego_fut_cmd(self, path_action: str):
         return path_to_ego_fut_cmd(path_action)
@@ -132,3 +141,23 @@ class PilotRuntime:
             model_debug=model_debug,
             fallback_reason=self.last_error,
         )
+
+    def _report_decision(self, timestamp: float, decision: PilotDecision) -> None:
+        try:
+            self.roadside_reporter.report_decision(
+                vehicle_id=self.current_vehicle_id,
+                timestamp=timestamp,
+                upstream=self.current_upstream,
+                decision=decision,
+            )
+        except Exception as exc:
+            print(f"[PilotAgent] roadside report failed after decision: {exc}")
+
+    def _report_heartbeat(self, timestamp: float) -> None:
+        try:
+            self.roadside_reporter.report_heartbeat(
+                vehicle_id=self.current_vehicle_id,
+                timestamp=timestamp,
+            )
+        except Exception as exc:
+            print(f"[PilotAgent] roadside heartbeat failed: {exc}")

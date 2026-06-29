@@ -23,6 +23,11 @@
   "logging": {
     "path": "./pilot_logs/pilot_decisions.jsonl",
     "enabled": true
+  },
+  "roadside_report": {
+    "enabled": false,
+    "url": "http://127.0.0.1:8890/vehicles/state",
+    "endpoint": null,
+    "timeout_ms": 200
   }
 }
-

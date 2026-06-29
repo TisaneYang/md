@@ -382,6 +382,10 @@ class MinddriveAgent(autonomous_agent.AutonomousAgent):
         results['ego_fut_cmd'] = command2hot(tick_data['command_curr'])
         pilot_decision = None
         if self.pilot_runtime is not None:
+            hero_actor = getattr(self, 'hero_actor', None)
+            self.pilot_runtime.set_vehicle_identity(
+                None if hero_actor is None else str(hero_actor.id)
+            )
             if self.pilot_runtime.should_request_decision(self.step):
                 pilot_decision = self.pilot_runtime.step(
                     tick=self.step,

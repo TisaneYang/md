@@ -1,0 +1,31 @@
+# Template route-level roadside camera config.
+# Copy this file to RouteScenario_{route_id}.yaml for each Bench2Drive route.
+
+route_name: "RouteScenario_example"
+scene_description: "示例场景：目标车辆行驶在由路侧摄像头覆盖的城市道路中，路侧智能体需要结合多相机观察、车辆状态上报与管理员指令，对潜在盲区、遮挡风险和策略调整需求进行协同判断。"
+
+cameras:
+  - id: "roadside_01"
+    name: "manual roadside camera 01"
+    enabled: true
+    location:
+      x: 266.30
+      y: -307.80
+      z: 5.00
+    rotation:
+      pitch: -5.71
+      yaw: 180.00
+      roll: 0.00
+    image_size:
+      width: 800
+      height: 600
+    fov: 90.0
+
+projection:
+  near_clip: 0.10
+
+visualization:
+  bbox_thickness: 4
+
+sampling:
+  interval_ticks: 10

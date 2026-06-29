@@ -41,6 +41,14 @@ class LoggingConfig:
 
 
 @dataclass
+class RoadsideReportConfig:
+    enabled: bool = False
+    url: str = "http://127.0.0.1:8890/vehicles/state"
+    endpoint: Optional[str] = None
+    timeout_ms: int = 200
+
+
+@dataclass
 class PilotConfig:
     enabled: bool = False
     agent_interval_ticks: int = 10
@@ -48,6 +56,7 @@ class PilotConfig:
     cloud: CloudConfig = field(default_factory=CloudConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    roadside_report: RoadsideReportConfig = field(default_factory=RoadsideReportConfig)
 
     @classmethod
     def from_path(cls, path: Optional[str]) -> "PilotConfig":
@@ -76,6 +85,7 @@ class PilotConfig:
         cloud_raw = raw.get("cloud", {})
         context = ContextConfig(**raw.get("context", {}))
         logging = LoggingConfig(**raw.get("logging", {}))
+        roadside_report = RoadsideReportConfig(**raw.get("roadside_report", {}))
         return cls(
             enabled=bool(raw.get("enabled", False)),
             agent_interval_ticks=int(raw.get("agent_interval_ticks", 10)),
@@ -83,5 +93,5 @@ class PilotConfig:
             cloud=CloudConfig(**cloud_raw),
             context=context,
             logging=logging,
+            roadside_report=roadside_report,
         )
-

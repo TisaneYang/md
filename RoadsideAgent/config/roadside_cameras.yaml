@@ -1,0 +1,49 @@
+# Example roadside camera setup.
+# Coordinates are absolute CARLA world coordinates, not ego-vehicle-relative.
+# Add or remove cameras freely. There is no fixed front/rear pattern.
+
+scenario_id: "example_manual_scene"
+
+cameras:
+  - id: "roadside_01"
+    name: "manual roadside camera 01"
+    enabled: true
+    location:
+      x: 266.30
+      y: -307.80
+      z: 5.00
+    rotation:
+      pitch: -5.71
+      yaw: 180.00
+      roll: 0.00
+    image_size:
+      width: 800
+      height: 600
+    fov: 90.0
+
+  - id: "roadside_02"
+    name: "manual roadside camera 02"
+    enabled: true
+    location:
+      x: 266.30
+      y: -307.80
+      z: 5.00
+    rotation:
+      pitch: 5.71
+      yaw: 360.00
+      roll: 0.00
+    image_size:
+      width: 800
+      height: 600
+    fov: 90.0
+
+projection:
+  near_clip: 0.10
+
+visualization:
+  bbox_thickness: 4
+
+sampling:
+  # Run RoadsideAgent once per N simulation ticks. Camera sensors still receive
+  # images continuously; this only controls expensive perception/reasoning.
+  interval_ticks: 10

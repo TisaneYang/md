@@ -11,6 +11,7 @@ It must not be modified and is for reference only!
 """
 
 from __future__ import print_function
+import pathlib
 import signal
 import sys
 import time
@@ -26,6 +27,16 @@ from srunner.scenariomanager.watchdog import Watchdog
 from leaderboard.autoagents.agent_wrapper import AgentWrapperFactory, AgentError, TickRuntimeError
 from leaderboard.envs.sensor_interface import SensorReceivedNoData
 from leaderboard.utils.result_writer import ResultOutputProvider
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
+_ROADSIDE_ROOT = _REPO_ROOT / "RoadsideAgent"
+if _ROADSIDE_ROOT.exists() and str(_ROADSIDE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROADSIDE_ROOT))
+
+try:
+    from roadside_agent import Bench2DriveRoadsideHook
+except Exception:  # RoadsideAgent is optional for normal Bench2Drive runs.
+    Bench2DriveRoadsideHook = None
 
 
 class ScenarioManager(object):
@@ -71,6 +82,7 @@ class ScenarioManager(object):
         self._watchdog = None
         self._agent_watchdog = None
         self._scenario_thread = None
+        self._roadside_hook = None
 
         self._statistics_manager = statistics_manager
 
@@ -93,6 +105,7 @@ class ScenarioManager(object):
         """
         Reset all parameters
         """
+        self._cleanup_roadside_agent()
         self._timestamp_last_run = 0.0
         self.scenario_duration_system = 0.0
         self.scenario_duration_game = 0.0
@@ -125,6 +138,7 @@ class ScenarioManager(object):
         # py_trees.display.render_dot_tree(self.scenario_tree)
 
         self._agent_wrapper.setup_sensors(self.ego_vehicles[0])
+        self._setup_roadside_agent()
 
     def build_scenarios_loop(self, debug):
         """
@@ -201,6 +215,7 @@ class ScenarioManager(object):
             # Tick scenario. Add the ego control to the blackboard in case some behaviors want to change it
             py_trees.blackboard.Blackboard().set("AV_control", ego_action, overwrite=True)
             self.scenario_tree.tick_once()
+            self._tick_roadside_agent()
 
             if self._debug_mode > 1:
                 self.compute_duration_time()
@@ -251,6 +266,7 @@ class ScenarioManager(object):
             self._agent_watchdog.stop()
 
         self.compute_duration_time()
+        self._cleanup_roadside_agent()
 
         if self.get_running_status():
             if self.scenario is not None:
@@ -282,3 +298,35 @@ class ScenarioManager(object):
         Analyzes and prints the results of the route
         """
         ResultOutputProvider(self)
+
+    def _setup_roadside_agent(self):
+        """
+        Setup optional RoadsideAgent hook for route-level roadside perception.
+        """
+        if Bench2DriveRoadsideHook is None:
+            return
+
+        route_name = getattr(getattr(self.scenario, "config", None), "name", None)
+        if route_name is None:
+            return
+
+        self._roadside_hook = Bench2DriveRoadsideHook.create_for_route(
+            world=CarlaDataProvider.get_world(),
+            route_name=route_name,
+        )
+        self._roadside_hook.start()
+
+    def _tick_roadside_agent(self):
+        """
+        Trigger optional RoadsideAgent hook after scenario and actor state update.
+        """
+        if self._roadside_hook is not None:
+            self._roadside_hook.tick(self.tick_count)
+
+    def _cleanup_roadside_agent(self):
+        """
+        Destroy RoadsideAgent sensors and clear runtime state.
+        """
+        if self._roadside_hook is not None:
+            self._roadside_hook.destroy()
+            self._roadside_hook = None

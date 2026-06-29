@@ -1,324 +1,229 @@
-# 路侧智能体 (Roadside Agent)
+# RoadsideAgent
 
-一个基于多模态大语言模型的路侧交通智能体系统，能够分析路侧摄像头拍摄的交通场景，识别车辆位置和驾驶盲区，并为驾驶员提供安全驾驶建议。
+新版 RoadsideAgent 现在包含两层：
 
-## 功能特性
+- 路侧感知层：相机管理、目标车辆投影、绿色 2D 标定框绘制。
+- 路侧推理层：批处理多车输入、OpenAI-compatible 模型调用、上下文记忆、可选车辆消息下发。
 
-- **多摄像头管理**: 支持配置和管理多个路侧摄像头，自动判断车辆在哪个摄像头视野内
-- **3D到2D投影**: 将车辆3D位置投影到摄像头图像平面，自动绘制标定框
-- **监控死角检测**: 识别车辆是否进入监控盲区，提供相应的安全警告
-- **场景理解**: 使用多模态LLM分析交通场景，识别潜在风险和驾驶盲区
-- **CoT推理**: 采用Chain-of-Thought推理方式，提供完整的分析过程
-- **自然语言建议**: 生成清晰、简洁、可执行的驾驶建议
-- **交通指挥支持**: 支持接收和处理交通指挥者的自然语言指令
+## 当前实现范围
 
-## 系统架构
+- 在 CARLA world 中按绝对坐标创建路侧 RGB 摄像头。
+- 支持每个场景手动配置任意数量路侧摄像头。
+- 从 CARLA 目标车辆 actor 直接读取 `get_transform()` 和 `bounding_box`。
+- 将车辆 3D bounding box 投影到路侧相机画面。
+- 只绘制一个绿色 2D 框，默认线宽为 4。
+- 对车辆跨过相机近裁切面的情况做过滤：只使用深度大于 `near_clip` 的角点计算 2D 框，避免旧式 3D 连线在近裁切面附近拉出异常长线。
+- 支持低频采样调度接口，避免每 tick 触发 RoadsideAgent 推理。
+- 提供车辆主动上报状态的 HTTP 接口，用于维护可交互车辆白名单。
+- 提供车辆编号到 `ip:port` 的通信映射，用于路侧向车辆下发指令。
+- 提供与 PilotAgent 对齐的 OpenAI-compatible 多模态推理链路。
+- Prompt 设计与 PilotAgent 对齐：职责、规则、目标、输入输出约束放在 system prompt；user prompt 只描述当前环境与输入载荷。
+- 模型输出格式为：
+  - `global_summary`
+  - `vehicle_outputs = [{vehicle_id, should_send, message}]`
 
-```
+## 目录
+
+```text
 RoadsideAgent/
-├── agent/                      # 核心模块
-│   ├── roadside_agent.py      # 主Agent类
-│   ├── camera_manager.py      # 摄像头管理与投影
-│   ├── input_processor.py     # 输入处理
-│   ├── llm_interface.py       # LLM接口
-│   └── __init__.py
-├── utils/                      # 工具模块
-│   ├── vehicle_projection.py  # 车辆投影工具
-│   ├── bbox_visualizer.py     # 边界框可视化
-│   └── __init__.py
-├── config/                     # 配置文件
-│   ├── agent_config.yaml      # Agent配置
-│   └── camera_config.yaml     # 摄像头配置
-├── prompts/                    # 提示词模板
-│   └── system_prompt.txt      # 系统提示词
-├── examples/                   # 使用示例
-│   └── agent_usage_example.py
-├── test/                       # 测试文件
-│   ├── test_projection.py
-│   └── example_usage.py
-├── template.json              # 车辆信息模板
-├── requirements.txt           # 依赖项
-└── README.md                  # 本文档
+├── config/
+│   ├── roadside_agent.json
+│   ├── roadside_cameras.yaml
+│   └── routes/
+├── docs/
+│   └── integration_plan.md
+└── roadside_agent/
+    ├── __init__.py
+    ├── cloud_vlm_client.py
+    ├── camera.py
+    ├── communication.py
+    ├── config.py
+    ├── context.py
+    ├── http_server.py
+    ├── logger.py
+    ├── manager.py
+    ├── prompt.py
+    ├── projection.py
+    ├── runtime.py
+    ├── types.py
+    ├── vehicle_registry.py
+    └── visualization.py
 ```
 
-## 安装
+## 最小使用方式
 
-### 1. 克隆或下载项目
-
-```bash
-cd RoadsideAgent
-```
-
-### 2. 安装依赖
-
-```bash
-pip install -r requirements.txt
-```
-
-### 3. 配置API密钥
-
-设置环境变量（根据使用的LLM提供商选择）：
-
-```bash
-# 使用OpenAI
-export OPENAI_API_KEY='your-openai-api-key'
-
-# 或使用Anthropic
-export ANTHROPIC_API_KEY='your-anthropic-api-key'
-```
-
-## 快速开始
-
-### 基本使用
+在 Bench2Drive 已经完成 `CarlaDataProvider.set_world(...)` 且 ego vehicle 已经 spawn 后：
 
 ```python
-from agent.roadside_agent import RoadsideAgent
-import numpy as np
+from pathlib import Path
 
-# 1. 初始化Agent
-agent = RoadsideAgent(
-    agent_config_path='config/agent_config.yaml',
-    camera_config_path='config/camera_config.yaml'
+from roadside_agent import RoadsidePerceptionManager, RoadsideAgent
+
+manager = RoadsidePerceptionManager.from_route_config(
+    world=world,
+    route_name=config.name,  # e.g. "RouteScenario_0"
+    config_root=Path("RoadsideAgent/config"),
 )
+manager.spawn_cameras()
 
-# 2. 准备输入数据
-raw_images = {
-    'camera_1': np.array(...),  # 摄像头1的原始图像
-    'camera_2': np.array(...)   # 摄像头2的原始图像
-}
+roadside_agent = RoadsideAgent(manager)
 
-vehicle_info = {
-    "type": "轿车",
-    "color": "白色",
-    "plate": "京A12345",
-    "intention": "直行通过路段",
-    "length": 4.5,
-    "width": 1.8,
-    "height": 1.5,
-    "location_x": 20.0,
-    "location_y": 0.0,
-    "location_z": 0.0,
-    "rotation_row": 0.0,
-    "rotation_pitch": 0.0,
-    "rotation_yaw": 0.0,
-    "velocity": 45.5,
-    "acceleration": 0.2
-}
+if manager.should_sample(tick_index):
+    result = roadside_agent.analyze(target_actor=ego_vehicle)
 
-# 3. 分析场景
-result = agent.analyze(
-    raw_images=raw_images,
-    vehicle_info=vehicle_info,
-    traffic_command=None  # 可选的交通指挥指令
-)
-
-# 4. 查看结果
-print(f"驾驶建议: {result['advice']}")
-print(f"风险等级: {result['risk_level']}")
-print(f"置信度: {result['confidence']}")
+# result["perception"]["cameras"][camera_id].image_with_bbox 是带绿色 2D 框的 BGR 图像
 ```
 
-### 运行示例
+车辆状态上报入口：
 
-```bash
-python examples/agent_usage_example.py
+```text
+POST http://127.0.0.1:8890/vehicles/state
+Content-Type: application/json
 ```
 
-## 配置说明
+请求体：
 
-### 摄像头配置 (camera_config.yaml)
-
-```yaml
-cameras:
-  - id: "camera_1"
-    name: "路口东侧摄像头"
-    location: {x: 0.0, y: 10.0, z: 5.0}
-    rotation: {pitch: -15.0, yaw: -90.0, roll: 0.0}
-    intrinsics: {fx: 1000.0, fy: 1000.0, cx: 960.0, cy: 540.0}
-    image_size: {width: 1920, height: 1080}
-
-camera_relationships:
-  - cameras: ["camera_1", "camera_2"]
-    type: "back_to_back"
-    description: "两个摄像头背靠背设置"
-```
-
-### Agent配置 (agent_config.yaml)
-
-```yaml
-llm:
-  provider: "openai"  # 或 "anthropic"
-  model: "gpt-4-vision-preview"
-  api_key: "${OPENAI_API_KEY}"
-  max_tokens: 2000
-  temperature: 0.7
-```
-
-## 核心功能
-
-### 1. 摄像头管理与投影
-
-系统自动将车辆3D位置投影到各个摄像头的图像平面：
-
-- 读取车辆3D位置和姿态
-- 遍历所有摄像头配置
-- 使用透视投影计算2D边界框
-- 自动绘制标定框
-- 判断车辆可见性
-
-### 2. 监控死角检测
-
-当车辆不在任何摄像头视野内时：
-
-- 标记为"监控死角"状态
-- 计算车辆到各摄像头的距离
-- 推测车辆所在盲区位置
-- 生成警告信息和安全建议
-
-### 3. 场景分析与推理
-
-使用多模态LLM进行7步推理：
-
-1. **摄像头覆盖分析**: 判断车辆是否在视野内
-2. **观察分析**: 描述图像中看到的内容
-3. **场景识别**: 识别交通场景类型
-4. **盲区识别**: 识别驾驶员的视野盲区
-5. **风险评估**: 分析潜在风险
-6. **意图匹配**: 评估驾驶意图与场景匹配度
-7. **建议生成**: 生成具体的驾驶建议
-
-### 4. 优先级处理
-
-- **最高优先级**: 交通指挥者指令
-- **次优先级**: 紧急安全警告（包括监控死角）
-- **常规优先级**: 一般驾驶建议
-
-## 使用场景
-
-### 场景1: 正常行驶
-
-车辆在摄像头视野内，清晰可见，Agent分析场景并提供常规驾驶建议。
-
-### 场景2: 监控死角
-
-车辆进入摄像头覆盖盲区，Agent发出警告并建议谨慎驾驶。
-
-### 场景3: 多摄像头覆盖
-
-车辆同时出现在多个摄像头视野中，Agent选择最佳视角进行分析。
-
-### 场景4: 交通指挥
-
-存在交通指挥指令时，Agent优先执行该指令并提供相关建议。
-
-### 场景5: 遮挡场景
-
-车辆在视野内但被其他物体遮挡，Agent基于可见信息给出建议。
-
-## API参考
-
-### RoadsideAgent
-
-主要方法：
-
-- `__init__(agent_config_path, camera_config_path)`: 初始化Agent
-- `analyze(raw_images, vehicle_info, traffic_command=None)`: 分析场景
-- `get_camera_info()`: 获取摄像头配置信息
-- `reload_config()`: 重新加载配置
-- `analyze_batch(scenarios)`: 批量分析多个场景
-
-### 输入格式
-
-**车辆信息** (参考template.json):
 ```json
 {
-    "type": "轿车",
-    "color": "白色",
-    "plate": "京A12345",
-    "intention": "直行通过路段",
-    "length": 4.5,
-    "width": 1.8,
-    "height": 1.5,
-    "location_x": 20.0,
-    "location_y": 0.0,
-    "location_z": 0.0,
-    "rotation_row": 0.0,
-    "rotation_pitch": 0.0,
-    "rotation_yaw": 0.0,
-    "velocity": 45.5,
-    "acceleration": 0.2
+  "vehicle_id": "123",
+  "timestamp": 123.45,
+  "endpoint": "127.0.0.1:9101",
+  "upstream": {
+    "timestamp": 123.45,
+    "instruction": ""
+  },
+  "task_status": "正常巡航中，未收到任务"
 }
 ```
 
-### 输出格式
+其中：
+
+- `vehicle_id` 使用 CARLA `actor.id`。
+- `timestamp` 是心跳字段；只要持续上报，就会被 RoadsideAgent 纳入处理范围。
+- `upstream` 和 `task_status` 来自车辆端 PilotAgent。
+- `endpoint` 是路侧向车辆下发自然语言建议的临时地址。
+
+Bench2Drive hook 推理前只会处理近期上报过状态的车辆，不再扫描全场所有 `vehicle.*` 作为交互对象。
+
+HTTP server 配置位于 `RoadsideAgent/config/roadside_agent.json`：
+
+```json
+{
+  "server": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8890,
+    "stale_after_seconds": 2.0
+  }
+}
+```
+
+LLM runtime 入口：
 
 ```python
-{
-    "camera_coverage": {
-        "in_blind_spot": False,
-        "visible_cameras": ["camera_1"],
-        "blind_spot_info": None
+from roadside_agent import RoadsideRuntime
+
+runtime = RoadsideRuntime.from_config_path("RoadsideAgent/config/roadside_agent.json")
+
+if manager.should_sample(tick_index):
+    perception = manager.perceive_targets(vehicle_registry.active_actor_map())
+    decision = runtime.step(
+        tick=tick_index,
+        timestamp=timestamp,
+        route_name="RouteScenario_0",
+        scene_description=manager.scene_description,
+        perception=perception,
+        vehicle_registry=vehicle_registry,
+    )
+```
+
+路侧下发指令入口：
+
+```python
+from roadside_agent import VehicleCommandClient
+
+command_client = VehicleCommandClient(vehicle_registry.endpoint_map())
+roadside_agent = RoadsideAgent(manager, command_client=command_client)
+
+send_result = roadside_agent.send_to_vehicle(
+    vehicle_id=str(actor_1.id),
+    message={
+        "type": "roadside_command",
+        "summary": "slow down and keep lane",
     },
-    "vehicle_summary": "目标车辆：白色轿车...",
-    "reasoning": "## 推理过程\n...",
-    "advice": "建议保持当前速度...",
-    "risk_level": "low",
-    "confidence": 0.85
+)
+```
+
+临时通信协议是 HTTP JSON POST，默认发送到：
+
+```text
+http://{ip}:{port}/roadside/message
+```
+
+请求体：
+
+```json
+{
+  "vehicle_id": "123",
+  "message": {
+    "type": "roadside_command",
+    "summary": "slow down and keep lane"
+  }
 }
 ```
 
-## 性能优化
+## LLM 输出格式
 
-- 投影计算支持并行处理多个摄像头
-- 图像自动压缩以减少LLM token消耗
-- 摄像头配置和投影矩阵缓存
-- 支持批量分析多个场景
+RoadsideRuntime 期望模型返回纯 JSON：
 
-## 扩展性
+```json
+{
+  "global_summary": "整体态势总结",
+  "vehicle_outputs": [
+    {
+      "vehicle_id": "123",
+      "should_send": true,
+      "message": "自然语言建议或任务路线"
+    },
+    {
+      "vehicle_id": "456",
+      "should_send": false,
+      "message": null
+    }
+  ]
+}
+```
 
-- 支持动态添加/删除摄像头
-- 支持OpenAI和Anthropic两种LLM后端
-- 预留接口支持视频流处理
-- 支持自定义场景分析规则
+其中：
 
-## 依赖项
+- `global_summary` 是写回上下文的唯一总结字段。
+- `should_send=false` 表示本轮不下发该车消息。
+- `message` 是自然语言内容，不限制成固定 command schema。
 
-- Python >= 3.8
-- numpy >= 1.20.0
-- opencv-python >= 4.5.0
-- pyyaml >= 6.0
-- pillow >= 9.0.0
-- openai >= 1.0.0 或 anthropic >= 0.18.0
+## 多图批处理输入
 
-## 注意事项
+一次推理处理多辆车。每辆车所有可见相机图像都会附上，不设上限，不可见相机不附。
 
-1. **API密钥**: 使用前必须设置相应的API密钥环境变量
-2. **图像格式**: 输入图像必须是numpy数组，格式为(H, W, 3)的BGR图像
-3. **坐标系**: 使用右手坐标系，Z轴向上，X轴为前进方向
-4. **角度单位**: 所有旋转角度使用度（degree）
-5. **成本控制**: LLM调用会产生费用，建议合理控制调用频率
+OpenAI-compatible provider 下，请求中的 user content 采用与 PilotAgent 一致的多模态 block：
 
-## 故障排除
+- 一段 JSON 文本，包含本轮批处理的结构化输入。
+- 若干组 `text + image_url`，每组用文本锚点标明：
+  - `vehicle_id`
+  - `camera_id`
+  - `image_key`
 
-### 问题1: 投影失败
+这样模型可以将每张带绿色框的图像与对应车辆绑定起来。
 
-**原因**: 车辆在摄像头后方或视野外
-**解决**: 检查车辆位置和摄像头配置，确保车辆在合理范围内
+## 与旧版的关键差异
 
-### 问题2: LLM调用失败
+- 旧版目标车定位依赖外部车辆信息 JSON；新版通过车辆编号维护 CARLA actor，再直接读取 actor。
+- 旧版同时画 3D 框和 2D 外接框；新版只保留绿色加粗 2D 框。
+- 旧版 `get_vehicle_corners_2d()` 会投影所有角点；新版只使用在近裁切面前方的角点计算 bbox。
+- 旧版 Agent 链路包含 LLM 多阶段推理；新版目前接入的是一轮批处理 VLM 调用，采用 PilotAgent 风格的 prompt 分层：system prompt 承载职责、规则与输出约束，user prompt 只承载当前环境输入。
+- 新版图像标注使用 `vehicle {actor.id}`，每辆车单独生成带框图。
 
-**原因**: API密钥未设置或无效
-**解决**: 检查环境变量设置，确认API密钥有效
+## 尚未擅自决定的业务问题
 
-### 问题3: 图像格式错误
-
-**原因**: 输入图像格式不正确
-**解决**: 确保图像是numpy数组，格式为(H, W, 3)
-
-## 许可证
-
-本项目仅供学习和研究使用。
-
-## 联系方式
-
-如有问题或建议，请提交Issue。
+- RoadsideAgent 接入 leaderboard evaluator 的具体位置。
+- 每条 route 的摄像头位姿采集方式。
+- 车辆端具体如何将 PilotAgent 的 `upstream` 与 `task_status` 上报到 RoadsideAgent。
